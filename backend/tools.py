@@ -11,6 +11,8 @@ class ProposedAction(BaseModel):
 class Decision(Enum):
     SAFE = "safe"
     NEEDS_APPROVAL = "needs_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 def get_patient_allergies(patient_id: int) -> list[str]:
     with get_connection() as conn:
@@ -94,5 +96,46 @@ def update_prescription(
         conn.commit()
             
     
+def create_pending_approval(
+    action_type: str,
+    action_payload: dict,
+    description: str,
+    approver_id: int,
+    patient_id: int | None = None,
+    expires_at: str | None = None
+) -> int:
+    payload = json.dumps(action_payload)
+    with get_connection() as conn:
+        cur = conn.cursor()
+        add_pending_approval = """INSERT INTO pending_approvals (action_type, action_payload, description, approver_id, patient_id, expires_at) VALUES(?, ?, ?, ?, ?, ?)"""
+        cur.execute(add_pending_approval, (action_type, payload, description, approver_id, patient_id, expires_at))
+        conn.commit()
+        return cur.lastrowid
         
+def resolve_approval(approval_id: int, approval_status: str) -> None:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        update_approval = """UPDATE pending_approvals SET approval_status = ? WHERE id = ?;"""
+        cur.execute(update_approval, (approval_status, approval_id))
+        conn.commit()
+        if approval_status == "approved":
+            fetch_payload = """SELECT action_type, action_payload, approver_id FROM pending_approvals WHERE id = ?;"""
+            cur.execute(fetch_payload, (approval_id,))
+            row = cur.fetchone()
+            payload_string = row["action_payload"]
+            payload_dict = json.loads(payload_string)
+            update_prescription(**payload_dict)
+            action = ProposedAction(
+                action_type=row["action_type"],
+                writes_to_db=True,
+                description=payload_string
+            )
+            log_audit_entry(action, decision=Decision.APPROVED, approved_by=row["approver_id"])
 
+def get_pending_approvals(surgeon_id: int) -> list[dict]:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        fetch_surgeon_approvals = """SELECT * FROM pending_approvals WHERE approver_id = ?;"""
+        cur.execute(fetch_surgeon_approvals, (surgeon_id,))
+        rows = cur.fetchall()
+        return [dict(row) for row in rows]

@@ -12,7 +12,8 @@ app = AsyncApp(token=os.getenv("SLACK_BOT_TOKEN"))
 @app.event("message")
 async def handle_message(event, say):
     text = event.get("text")
-    response = await ask_agent(text)
+    channel_id = event.get("channel")
+    response = await ask_agent(text, surgeon_id=1, channel_id=channel_id)
     await say(response)
     
 
