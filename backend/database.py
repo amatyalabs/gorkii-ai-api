@@ -128,6 +128,19 @@ def create_schema() -> None:
                            CHECK(decision IN ('safe', 'needs_approval', 'approved', 'rejected')),
             approved_by    INTEGER REFERENCES surgeons(id)
         );
+        
+        CREATE TABLE IF NOT EXISTS pending_approvals (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_id       INTEGER REFERENCES patients(id),
+            action_type      TEXT NOT NULL,
+            action_payload   TEXT NOT NULL,
+            description      TEXT NOT NULL,      
+            approver_id      INTEGER REFERENCES surgeons(id),
+            approval_status  TEXT NOT NULL DEFAULT 'pending'
+                            CHECK(approval_status IN ('pending', 'approved', 'rejected')),
+            created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at       TEXT
+        );
     """
 
     with get_connection() as conn:

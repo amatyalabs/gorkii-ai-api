@@ -10,11 +10,6 @@ def get_patient_allergies(patient_id: int) -> list[str]:
     return _get_patient_allergies(patient_id)
     
 @mcp.tool()
-def classify_action(action: ProposedAction) -> Decision:
-    """Classify a proposed action as SAFE or NEEDS_APPROVAL. Call this before executing any action. Returns NEEDS_APPROVAL for any database write or high-risk action type."""
-    return _classify_action(action)
-    
-@mcp.tool()
 def get_active_medications(patient_id: int) -> list[str]:
     """Return active medications for a patient."""
     return _get_active_medications(patient_id)
@@ -23,17 +18,6 @@ def get_active_medications(patient_id: int) -> list[str]:
 def find_patient_by_name(name: str) -> list[dict]:
     """Find patient by name."""
     return _find_patient_by_name(name)
-
-@mcp.tool()
-def log_audit_entry(
-    action: ProposedAction,
-    decision: Decision,
-    surgeon_id: int | None = None,
-    patient_id: int | None = None,
-    approved_by: int | None = None
-) -> None:
-    """Log an audit entry with given parameters."""
-    return _log_audit_entry(action, decision, surgeon_id, patient_id, approved_by)
 
 @mcp.tool()
 def get_active_prescription(patient_id: int, medication_id: int) -> dict | None:
