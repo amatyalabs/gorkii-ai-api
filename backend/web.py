@@ -1,6 +1,8 @@
+import json
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from client import ask_agent
+from client import ask_agent, ask_agent_stream
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -28,4 +30,20 @@ async def chat(request: ChatRequest):
         return {"response": response}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-        
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    channel_id = str(request.surgeon_id)
+
+    async def event_source():
+        try:
+            async for event in ask_agent_stream(request.message, request.surgeon_id, channel_id):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

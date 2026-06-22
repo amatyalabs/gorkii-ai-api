@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
+  Animated,
+  Easing,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -14,52 +15,86 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { Ionicons } from '@expo/vector-icons';
 import Markdown from 'react-native-markdown-display';
-import { colors, radius, spacing } from '../constants/theme';
-import { postChat } from '../lib/api';
+import { colors, fonts, radius, spacing } from '../constants/theme';
+import { postChatStream } from '../lib/api';
 
 const INPUT_ROW_HEIGHT = 44;
+const INPUT_LINE_HEIGHT = 20;
 
-// Step 2 — THE product. A message list + input bar. Each send hits
-// POST /chat and renders the agent's reply string. Approval-required
-// replies come back as plain text for now; the dedicated red Approve/
-// Reject UI is step 3 (the approvals screen), so no red appears here.
+// Step 2 — THE product. A message list + input bar. Each send streams from
+// POST /chat/stream: "step" events update a transient thinking line in
+// place, and the "final" event becomes the agent's message bubble.
+// Approval-required replies come back as plain text for now; the dedicated
+// red Approve/Reject UI is step 3 (the approvals screen), so no red here.
 
 let counter = 0;
 const nextId = () => `${Date.now()}-${counter++}`;
+
+function ThinkingSpinner() {
+  const spin = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const animation = Animated.loop(
+      Animated.timing(spin, {
+        toValue: 1,
+        duration: 900,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      })
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [spin]);
+
+  const rotate = spin.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+
+  return (
+    <Animated.View style={{ transform: [{ rotate }] }}>
+      <Ionicons name="sync-outline" size={16} color={colors.textSecondary} />
+    </Animated.View>
+  );
+}
 
 export default function Chat() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [stepText, setStepText] = useState(null);
   const listRef = useRef(null);
   const headerHeight = useHeaderHeight();
 
-  const send = async () => {
+  const send = () => {
     const text = input.trim();
     if (!text || sending) return;
 
     setMessages((prev) => [...prev, { id: nextId(), role: 'user', text }]);
     setInput('');
     setSending(true);
+    setStepText('Thinking…');
 
-    try {
-      const reply = await postChat(text);
-      setMessages((prev) => [...prev, { id: nextId(), role: 'agent', text: reply }]);
-    } catch (e) {
-      // Never crash on a failed request — surface it as a message bubble.
-      // Kept neutral (not red): a network failure isn't a clinical safety
-      // state, and red is reserved for that (CLAUDE.md).
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: nextId(),
-          role: 'error',
-          text: 'Connection failed — couldn’t reach the assistant. Check that the backend is running and the IP in config is correct, then try again.',
-        },
-      ]);
-    } finally {
-      setSending(false);
-    }
+    postChatStream(text, {
+      onStep: (content) => setStepText(content),
+      onFinal: (content) => {
+        setMessages((prev) => [...prev, { id: nextId(), role: 'agent', text: content }]);
+        setStepText(null);
+        setSending(false);
+      },
+      onError: () => {
+        // Never crash on a failed request — surface it as a message bubble.
+        // Kept neutral (not red): a network failure isn't a clinical safety
+        // state, and red is reserved for that (CLAUDE.md).
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: nextId(),
+            role: 'error',
+            text: 'Connection failed — couldn’t reach the assistant. Check that the backend is running and the IP in config is correct, then try again.',
+          },
+        ]);
+        setStepText(null);
+        setSending(false);
+      },
+    });
   };
 
   const renderItem = ({ item }) => {
@@ -106,10 +141,10 @@ export default function Chat() {
           }
         />
 
-        {sending && (
+        {sending && stepText && (
           <View style={styles.typing}>
-            <ActivityIndicator color={colors.textSecondary} size="small" />
-            <Text style={styles.typingText}>Assistant is thinking…</Text>
+            <ThinkingSpinner />
+            <Text style={styles.typingText}>{stepText}</Text>
           </View>
         )}
 
@@ -121,6 +156,7 @@ export default function Chat() {
             value={input}
             onChangeText={setInput}
             multiline
+            textAlignVertical="center"
             onSubmitEditing={send}
           />
           <TouchableOpacity
@@ -143,6 +179,7 @@ const styles = StyleSheet.create({
   listContent: { padding: spacing.md, flexGrow: 1 },
   empty: {
     color: colors.textSecondary,
+    fontFamily: fonts.regular,
     textAlign: 'center',
     marginTop: spacing.xl,
     paddingHorizontal: spacing.lg,
@@ -157,21 +194,29 @@ const styles = StyleSheet.create({
   },
   bubbleUser: { alignSelf: 'flex-end', backgroundColor: colors.elevated },
   bubbleAgent: { alignSelf: 'flex-start', backgroundColor: colors.surface },
-  bubbleText: { color: colors.textPrimary, fontSize: 16, lineHeight: 22 },
+  bubbleText: { color: colors.textPrimary, fontFamily: fonts.regular, fontSize: 16, lineHeight: 22 },
   bubbleError: { backgroundColor: colors.surface },
   bubbleErrorText: {
     color: colors.textSecondary,
+    fontFamily: fonts.regular,
     fontStyle: 'italic',
     fontSize: 15,
     lineHeight: 21,
   },
   typing: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingHorizontal: spacing.md,
     paddingBottom: spacing.sm,
   },
-  typingText: { color: colors.textSecondary, marginLeft: spacing.sm, fontSize: 13 },
+  typingText: {
+    flex: 1,
+    color: colors.textSecondary,
+    fontFamily: fonts.regular,
+    marginLeft: spacing.sm,
+    fontSize: 13,
+    lineHeight: 18,
+  },
   inputBar: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -184,11 +229,12 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.surface,
     color: colors.textPrimary,
+    fontFamily: fonts.regular,
     borderRadius: radius.md,
     paddingHorizontal: spacing.md,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.sm,
+    paddingVertical: (INPUT_ROW_HEIGHT - INPUT_LINE_HEIGHT) / 2,
     fontSize: 16,
+    lineHeight: INPUT_LINE_HEIGHT,
     minHeight: INPUT_ROW_HEIGHT,
     maxHeight: 120,
     marginRight: spacing.sm,
@@ -197,7 +243,7 @@ const styles = StyleSheet.create({
     width: INPUT_ROW_HEIGHT,
     height: INPUT_ROW_HEIGHT,
     borderRadius: INPUT_ROW_HEIGHT / 2,
-    backgroundColor: colors.sendAccent,
+    backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -205,30 +251,41 @@ const styles = StyleSheet.create({
 });
 
 const markdownStyles = StyleSheet.create({
-  body: { color: colors.textPrimary, fontSize: 16, lineHeight: 22 },
-  heading1: { color: '#FFFFFF', fontSize: 22, fontWeight: '700', marginTop: spacing.sm, marginBottom: spacing.xs },
-  heading2: { color: '#FFFFFF', fontSize: 19, fontWeight: '700', marginTop: spacing.sm, marginBottom: spacing.xs },
-  heading3: { color: '#FFFFFF', fontSize: 17, fontWeight: '700', marginTop: spacing.sm, marginBottom: spacing.xs },
-  strong: { fontWeight: '700', color: colors.textPrimary },
-  em: { fontStyle: 'italic', color: colors.textPrimary },
+  body: { color: colors.textPrimary, fontFamily: fonts.regular, fontSize: 16, lineHeight: 22 },
+  heading1: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: 22, marginTop: spacing.sm, marginBottom: spacing.xs },
+  heading2: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: 19, marginTop: spacing.sm, marginBottom: spacing.xs },
+  heading3: { color: '#FFFFFF', fontFamily: fonts.bold, fontSize: 17, marginTop: spacing.sm, marginBottom: spacing.xs },
+  strong: { fontFamily: fonts.bold, color: colors.textPrimary },
+  em: { fontFamily: fonts.regular, fontStyle: 'italic', color: colors.textPrimary },
   bullet_list: { marginVertical: spacing.xs },
   ordered_list: { marginVertical: spacing.xs },
-  list_item: { color: colors.textPrimary, marginBottom: spacing.xs },
+  list_item: { color: colors.textPrimary, fontFamily: fonts.regular, marginBottom: spacing.xs },
+  blockquote: {
+    backgroundColor: colors.surface,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.elevated,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    marginVertical: spacing.xs,
+  },
   code_inline: {
-    backgroundColor: colors.elevated,
+    backgroundColor: colors.surface,
     color: colors.textPrimary,
+    fontFamily: fonts.regular,
     borderRadius: radius.sm,
     paddingHorizontal: 4,
   },
   fence: {
-    backgroundColor: colors.elevated,
+    backgroundColor: colors.surface,
     color: colors.textPrimary,
+    fontFamily: fonts.regular,
     borderRadius: radius.sm,
     padding: spacing.sm,
   },
   code_block: {
-    backgroundColor: colors.elevated,
+    backgroundColor: colors.surface,
     color: colors.textPrimary,
+    fontFamily: fonts.regular,
     borderRadius: radius.sm,
     padding: spacing.sm,
   },

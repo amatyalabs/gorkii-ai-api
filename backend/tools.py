@@ -28,7 +28,7 @@ def get_active_medications(patient_id: int) -> list[str]:
         cur = conn.cursor()
         active_medication_query = """SELECT medications.name FROM medications
        INNER JOIN prescriptions ON prescriptions.medication_id = medications.id
-       WHERE prescriptions.patient_id = ? AND prescriptions.status = 'ACTIVE';"""
+       WHERE prescriptions.patient_id = ? AND prescriptions.status = 'active';"""
         cur.execute(active_medication_query, (patient_id,))
         rows = cur.fetchall()
     return [row["name"] for row in rows]
