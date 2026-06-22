@@ -16,7 +16,7 @@ import { useHeaderHeight } from '@react-navigation/elements';
 import { Ionicons } from '@expo/vector-icons';
 import Markdown from 'react-native-markdown-display';
 import { colors, fonts, radius, spacing } from '../constants/theme';
-import { postChatStream } from '../lib/api';
+import { postChatStream, resolveApproval } from '../lib/api';
 
 const INPUT_ROW_HEIGHT = 44;
 const INPUT_LINE_HEIGHT = 20;
@@ -24,8 +24,8 @@ const INPUT_LINE_HEIGHT = 20;
 // Step 2 — THE product. A message list + input bar. Each send streams from
 // POST /chat/stream: "step" events update a transient thinking line in
 // place, and the "final" event becomes the agent's message bubble.
-// Approval-required replies come back as plain text for now; the dedicated
-// red Approve/Reject UI is step 3 (the approvals screen), so no red here.
+// An "approval" event renders a bubble with green Approve / red Reject
+// buttons — the one place green/red carry their CLAUDE.md safety meaning.
 
 let counter = 0;
 const nextId = () => `${Date.now()}-${counter++}`;
@@ -55,6 +55,67 @@ function ThinkingSpinner() {
   );
 }
 
+// Approve/Reject bubble. status drives which controls show:
+//   pending   -> the two buttons
+//   resolving -> a spinner (request in flight)
+//   approved/rejected -> a final state line (green / red)
+//   error     -> message + buttons re-enabled to retry
+function ApprovalBubble({ item, onResolve }) {
+  const { approvalId, text, status } = item;
+  const settled = status === 'approved' || status === 'rejected';
+
+  return (
+    <View style={[styles.bubble, styles.bubbleAgent, styles.approvalBubble]}>
+      <Text style={styles.approvalLabel}>Approval required</Text>
+      <Text style={styles.approvalText}>{text}</Text>
+
+      {status === 'resolving' && (
+        <View style={styles.approvalResolving}>
+          <ThinkingSpinner />
+          <Text style={styles.approvalResolvingText}>Submitting…</Text>
+        </View>
+      )}
+
+      {settled && (
+        <Text
+          style={[
+            styles.approvalOutcome,
+            { color: status === 'approved' ? colors.safe : colors.risk },
+          ]}
+        >
+          {status === 'approved' ? '✓ Approved' : '✗ Rejected'}
+        </Text>
+      )}
+
+      {(status === 'pending' || status === 'error') && (
+        <>
+          {status === 'error' && (
+            <Text style={styles.approvalErrorText}>Couldn’t submit — try again.</Text>
+          )}
+          <View style={styles.approvalActions}>
+            <TouchableOpacity
+              style={[styles.approvalButton, styles.rejectButton]}
+              onPress={() => onResolve(item.id, approvalId, 'rejected')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="close" size={18} color={colors.textPrimary} />
+              <Text style={styles.approvalButtonText}>Reject</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.approvalButton, styles.approveButton]}
+              onPress={() => onResolve(item.id, approvalId, 'approved')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="checkmark" size={18} color={colors.textPrimary} />
+              <Text style={styles.approvalButtonText}>Approve</Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
 export default function Chat() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -74,6 +135,12 @@ export default function Chat() {
 
     postChatStream(text, {
       onStep: (content) => setStepText(content),
+      onApproval: (approvalId, content) => {
+        setMessages((prev) => [
+          ...prev,
+          { id: nextId(), role: 'approval', approvalId, text: content, status: 'pending' },
+        ]);
+      },
       onFinal: (content) => {
         setMessages((prev) => [...prev, { id: nextId(), role: 'agent', text: content }]);
         setStepText(null);
@@ -97,7 +164,25 @@ export default function Chat() {
     });
   };
 
+  const setMessageStatus = (messageId, status) =>
+    setMessages((prev) =>
+      prev.map((m) => (m.id === messageId ? { ...m, status } : m))
+    );
+
+  const handleResolve = async (messageId, approvalId, status) => {
+    setMessageStatus(messageId, 'resolving');
+    try {
+      await resolveApproval(approvalId, status);
+      setMessageStatus(messageId, status); // 'approved' | 'rejected'
+    } catch {
+      setMessageStatus(messageId, 'error');
+    }
+  };
+
   const renderItem = ({ item }) => {
+    if (item.role === 'approval') {
+      return <ApprovalBubble item={item} onResolve={handleResolve} />;
+    }
     if (item.role === 'error') {
       return (
         <View style={[styles.bubble, styles.bubbleAgent, styles.bubbleError]}>
@@ -202,6 +287,65 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     fontSize: 15,
     lineHeight: 21,
+  },
+  approvalBubble: { borderWidth: 1, borderColor: colors.elevated },
+  approvalLabel: {
+    color: colors.textSecondary,
+    fontFamily: fonts.semibold,
+    fontSize: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: spacing.xs,
+  },
+  approvalText: {
+    color: colors.textPrimary,
+    fontFamily: fonts.regular,
+    fontSize: 15,
+    lineHeight: 21,
+  },
+  approvalActions: {
+    flexDirection: 'row',
+    marginTop: spacing.md,
+    gap: spacing.sm,
+  },
+  approvalButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.sm,
+    borderRadius: radius.md,
+    gap: spacing.xs,
+  },
+  approveButton: { backgroundColor: colors.safe },
+  rejectButton: { backgroundColor: colors.risk },
+  approvalButtonText: {
+    color: colors.textPrimary,
+    fontFamily: fonts.semibold,
+    fontSize: 15,
+  },
+  approvalResolving: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: spacing.md,
+  },
+  approvalResolvingText: {
+    color: colors.textSecondary,
+    fontFamily: fonts.regular,
+    fontSize: 13,
+    marginLeft: spacing.sm,
+  },
+  approvalOutcome: {
+    fontFamily: fonts.semibold,
+    fontSize: 15,
+    marginTop: spacing.md,
+  },
+  approvalErrorText: {
+    color: colors.textSecondary,
+    fontFamily: fonts.regular,
+    fontStyle: 'italic',
+    fontSize: 13,
+    marginTop: spacing.sm,
   },
   typing: {
     flexDirection: 'row',

@@ -24,7 +24,7 @@ export async function postChat(message) {
 // per event. React Native's fetch doesn't expose a readable response-body
 // stream reliably, so this uses XMLHttpRequest's onprogress, where
 // responseText accumulates the full response so far on every tick.
-export function postChatStream(message, { onStep, onFinal, onError } = {}) {
+export function postChatStream(message, { onStep, onFinal, onApproval, onError } = {}) {
   const xhr = new XMLHttpRequest();
   let eventsHandled = 0;
 
@@ -54,6 +54,7 @@ export function postChatStream(message, { onStep, onFinal, onError } = {}) {
 
       if (parsed.type === 'step') onStep?.(parsed.content);
       else if (parsed.type === 'final') onFinal?.(parsed.content);
+      else if (parsed.type === 'approval') onApproval?.(parsed.approval_id, parsed.content);
       else if (parsed.type === 'error') onError?.(new Error(parsed.content));
     }
   };
@@ -68,4 +69,21 @@ export function postChatStream(message, { onStep, onFinal, onError } = {}) {
   xhr.send(JSON.stringify({ message, surgeon_id: SURGEON_ID }));
 
   return xhr;
+}
+
+// POST /approvals/{id}/resolve — approving executes the paused action
+// server-side and writes an audit log; rejecting just marks it rejected.
+//   body { status: "approved" | "rejected" } -> { ok: true }
+export async function resolveApproval(approvalId, status) {
+  const res = await fetch(`${API_BASE_URL}/approvals/${approvalId}/resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Resolve failed (HTTP ${res.status})`);
+  }
+
+  return res.json();
 }

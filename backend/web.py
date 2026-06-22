@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from client import ask_agent, ask_agent_stream
+from tools import resolve_approval
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -17,7 +18,10 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     surgeon_id: int
-    
+
+class ResolveRequest(BaseModel):
+    status: str   # "approved" | "rejected"
+
 @app.get("/health")
 async def get_health():
     return {"status": "ok"}
@@ -47,3 +51,13 @@ async def chat_stream(request: ChatRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+@app.post("/approvals/{approval_id}/resolve")
+async def resolve(approval_id: int, request: ResolveRequest):
+    if request.status not in ("approved", "rejected"):
+        raise HTTPException(status_code=400, detail="status must be 'approved' or 'rejected'")
+    try:
+        resolve_approval(approval_id, request.status)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

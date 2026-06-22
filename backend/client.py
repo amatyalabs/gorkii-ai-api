@@ -11,8 +11,12 @@ conversation_histories = {}
 SYSTEM_PROMPT = (
     "You are a clinical assistant. Format responses in clean markdown using "
     "only headers, bold, italics, and bullet lists. Do not use emojis, "
-    "blockquotes, code blocks, or horizontal rules. Keep formatting consistent: "
-    "section titles as bold headers, data as bullet points."
+    "blockquotes, or code blocks. Do not use horizontal rules. Keep formatting consistent: "
+    "section titles as bold headers, data as bullet points. "
+    "Highlight relevant facts from the retrieved data — like an allergy that "
+    "conflicts with a discussed medication. Only surface information from the "
+    "tool results. Never give clinical recommendations or dosing advice; flag "
+    "conflicts for the surgeon to decide."
 )
 
 async def ask_agent(user_message: str, surgeon_id: int, channel_id: str) -> str:
@@ -215,7 +219,7 @@ async def ask_agent_stream(user_message: str, surgeon_id: int, channel_id: str):
                         if block.type == "tool_use":
                             label = STEP_LABELS.get(block.name, f"Working on {block.name}")
                             yield {"type": "step", "content": label}
-                            
+
                             print(f"DEBUG: Tool called: {block.name}")  # add this
                             print(f"DEBUG: In WRITE_TOOLS: {block.name in WRITE_TOOLS}")  # add this
                             if block.name in WRITE_TOOLS:
@@ -244,6 +248,7 @@ async def ask_agent_stream(user_message: str, surgeon_id: int, channel_id: str):
 
                             if decision == Decision.NEEDS_APPROVAL:
                                 print(f"DEBUG: NEEDS_APPROVAL triggered for {block.name}")  # add this
+                                approval_id = None
                                 try:
                                     approval_id = create_pending_approval(
                                         action_type=block.name,
@@ -254,6 +259,17 @@ async def ask_agent_stream(user_message: str, surgeon_id: int, channel_id: str):
                                     print(f"DEBUG: Created approval with id {approval_id}")  # add this
                                 except Exception as e:
                                     print(f"DEBUG: create_pending_approval failed: {e}")  # add this
+
+                                # Tell the client to render an Approve/Reject bubble
+                                # tied to this pending-approval id.
+                                if approval_id is not None:
+                                    details = ", ".join(f"{k}: {v}" for k, v in block.input.items())
+                                    yield {
+                                        "type": "approval",
+                                        "approval_id": approval_id,
+                                        "content": f"{block.name} — {details}",
+                                    }
+
                                 tool_results.append({
                                     "type": "tool_result",
                                     "tool_use_id": block.id,
