@@ -1,6 +1,7 @@
 from database import get_connection
 from pydantic import BaseModel
 from enum import Enum
+from state import conversation_histories
 import json
 
 class ProposedAction(BaseModel):
@@ -28,7 +29,7 @@ def get_active_medications(patient_id: int) -> list[str]:
         cur = conn.cursor()
         active_medication_query = """SELECT medications.name FROM medications
        INNER JOIN prescriptions ON prescriptions.medication_id = medications.id
-       WHERE prescriptions.patient_id = ? AND prescriptions.status = 'ACTIVE';"""
+       WHERE prescriptions.patient_id = ? AND prescriptions.status = 'active';"""
         cur.execute(active_medication_query, (patient_id,))
         rows = cur.fetchall()
     return [row["name"] for row in rows]
@@ -112,7 +113,7 @@ def create_pending_approval(
         conn.commit()
         return cur.lastrowid
         
-def resolve_approval(approval_id: int, approval_status: str) -> None:
+def resolve_approval(approval_id: int, approval_status: str, channel_id: str) -> None:
     with get_connection() as conn:
         cur = conn.cursor()
         update_approval = """UPDATE pending_approvals SET approval_status = ? WHERE id = ?;"""
@@ -124,6 +125,7 @@ def resolve_approval(approval_id: int, approval_status: str) -> None:
             row = cur.fetchone()
             payload_string = row["action_payload"]
             payload_dict = json.loads(payload_string)
+            payload_dict["surgeon_id"] = row["approver_id"]
             update_prescription(**payload_dict)
             action = ProposedAction(
                 action_type=row["action_type"],
@@ -132,6 +134,13 @@ def resolve_approval(approval_id: int, approval_status: str) -> None:
             )
             log_audit_entry(action, decision=Decision.APPROVED, approved_by=row["approver_id"])
 
+    if channel_id in conversation_histories:
+        status_text = "approved and executed" if approval_status == "approved" else "rejected"
+        conversation_histories[channel_id].append({
+            "role": "user",
+            "content": f"[System: Approval ID {approval_id} was {status_text}.]"
+        })
+
 def get_pending_approvals(surgeon_id: int) -> list[dict]:
     with get_connection() as conn:
         cur = conn.cursor()
@@ -139,3 +148,13 @@ def get_pending_approvals(surgeon_id: int) -> list[dict]:
         cur.execute(fetch_surgeon_approvals, (surgeon_id,))
         rows = cur.fetchall()
         return [dict(row) for row in rows]
+    
+def get_medication_by_name(name: str) -> dict | None:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        medication_name_query = """SELECT * FROM medications WHERE name LIKE ?;"""
+        cur.execute(medication_name_query, (name,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return dict(row)

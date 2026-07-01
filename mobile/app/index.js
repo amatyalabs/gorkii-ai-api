@@ -10,11 +10,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { colors, radius, spacing } from '../constants/theme';
+import { colors, fonts, radius, spacing } from '../constants/theme';
 
 // Step 1 of the build order: the login gate.
 // No real auth yet (CLAUDE.md) — pressing "Log in" just navigates to chat.
-// One accent only here: the green primary button. No red on this screen.
+// One accent only here: the orange primary button. No red on this screen.
 export default function Login() {
   const router = useRouter();
   const [email, setEmail] = useState('');
@@ -75,12 +75,13 @@ const styles = StyleSheet.create({
   },
   title: {
     color: colors.textPrimary,
+    fontFamily: fonts.bold,
     fontSize: 30,
-    fontWeight: '700',
     textAlign: 'center',
   },
   subtitle: {
     color: colors.textSecondary,
+    fontFamily: fonts.regular,
     fontSize: 15,
     textAlign: 'center',
     marginTop: spacing.xs,
@@ -89,6 +90,7 @@ const styles = StyleSheet.create({
   input: {
     backgroundColor: colors.surface,
     color: colors.textPrimary,
+    fontFamily: fonts.regular,
     borderRadius: radius.md,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
@@ -96,7 +98,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   button: {
-    backgroundColor: colors.safe,
+    backgroundColor: colors.primary,
     borderRadius: radius.md,
     paddingVertical: spacing.md,
     alignItems: 'center',
@@ -105,7 +107,7 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.4 },
   buttonText: {
     color: colors.textPrimary,
+    fontFamily: fonts.semibold,
     fontSize: 16,
-    fontWeight: '600',
   },
 });
