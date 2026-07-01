@@ -1,5 +1,5 @@
 from mcp.server.fastmcp import FastMCP
-from tools import get_pending_approvals as _get_pending_approvals, get_patient_allergies as _get_patient_allergies, get_active_medications as _get_active_medications, get_medication_by_name as _get_medication_by_name, find_patient_by_name as _find_patient_by_name, get_active_prescription as _get_active_prescription, update_prescription as _update_prescription, ProposedAction, Decision
+from tools import get_patient_documents as _get_patient_documents, get_pending_approvals as _get_pending_approvals, get_patient_allergies as _get_patient_allergies, get_active_medications as _get_active_medications, get_medication_by_name as _get_medication_by_name, find_patient_by_name as _find_patient_by_name, get_active_prescription as _get_active_prescription, update_prescription as _update_prescription, ProposedAction, Decision
 
 mcp = FastMCP("hospital")
 
@@ -97,6 +97,28 @@ def get_pending_approvals(surgeon_id: int) -> list[dict]:
     or to check the status of a previously submitted request.
     """
     return _get_pending_approvals(surgeon_id)
+
+@mcp.tool()
+def get_patient_documents(patient_id: int) -> list[dict]:
+    """
+    Retrieve all stored clinical documents for a patient, ordered most
+    recent first. Each result includes document_type, summary, 
+    surgeon_notes, uploaded_by, and created_at.
+
+    Call this when a surgeon asks about lab results, radiology reports,
+    operative notes, or any previously uploaded clinical documents for
+    a patient. Use the summary field to answer specific questions about
+    findings — the full document text is in that field.
+
+    If the list is empty, tell the surgeon no documents have been
+    uploaded for this patient yet — do not imply there are no records,
+    only that none have been scanned into this system.
+
+    To filter by type, scan the returned list for document_type values
+    matching what the surgeon asked for (e.g. 'lab_result',
+    'radiology_report') rather than calling this tool multiple times.
+    """
+    return _get_patient_documents(patient_id)
 
 if __name__ == "__main__":
     mcp.run()

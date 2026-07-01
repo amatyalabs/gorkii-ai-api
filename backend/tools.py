@@ -158,3 +158,27 @@ def get_medication_by_name(name: str) -> dict | None:
         if row is None:
             return None
         return dict(row)
+    
+def store_document(
+    patient_id: int,
+    document_type: str,
+    summary: str,
+    uploaded_by: int,
+    file_path: str | None = None,
+    surgeon_notes: str | None = None,
+) -> int:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        document_information = """INSERT INTO patient_documents (patient_id, document_type, summary, uploaded_by, file_path, surgeon_notes) VALUES(?, ?, ?, ?, ?, ?);"""
+        cur.execute(document_information, (patient_id, document_type, summary, uploaded_by, file_path, surgeon_notes))
+        conn.commit()
+        return cur.lastrowid
+    
+def get_patient_documents(patient_id: int) -> list[dict]:
+    with get_connection() as conn:
+        cur = conn.cursor()
+        patient_doc_query = """SELECT id, patient_id, document_type, summary, surgeon_notes, uploaded_by, created_at FROM patient_documents WHERE patient_id = ? ORDER BY created_at DESC;"""
+        cur.execute(patient_doc_query, (patient_id,))
+        rows = cur.fetchall()
+    return [dict(row) for row in rows]
+        
