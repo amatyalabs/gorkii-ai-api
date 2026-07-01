@@ -2,7 +2,7 @@ import json
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from client import ask_agent, ask_agent_stream
+from client import ask_agent_stream
 from tools import resolve_approval
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -21,19 +21,20 @@ class ChatRequest(BaseModel):
 
 class ResolveRequest(BaseModel):
     status: str   # "approved" | "rejected"
+    surgeon_id: int
 
 @app.get("/health")
 async def get_health():
     return {"status": "ok"}
 
-@app.post("/chat")
-async def chat(request: ChatRequest):
-    try:
-        channel_id=str(request.surgeon_id)
-        response = await ask_agent(request.message, request.surgeon_id, channel_id)
-        return {"response": response}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @app.post("/chat")
+# async def chat(request: ChatRequest):
+#     try:
+#         channel_id=str(request.surgeon_id)
+#         response = await ask_agent(request.message, request.surgeon_id, channel_id)
+#         return {"response": response}
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
@@ -57,7 +58,8 @@ async def resolve(approval_id: int, request: ResolveRequest):
     if request.status not in ("approved", "rejected"):
         raise HTTPException(status_code=400, detail="status must be 'approved' or 'rejected'")
     try:
-        resolve_approval(approval_id, request.status)
+        channel_id = str(request.surgeon_id)
+        resolve_approval(approval_id, request.status, channel_id)
         return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

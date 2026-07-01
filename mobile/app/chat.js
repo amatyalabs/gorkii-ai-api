@@ -61,13 +61,21 @@ function ThinkingSpinner() {
 //   approved/rejected -> a final state line (green / red)
 //   error     -> message + buttons re-enabled to retry
 function ApprovalBubble({ item, onResolve }) {
-  const { approvalId, text, status } = item;
+  const { approvalId, action, fields, status } = item;
   const settled = status === 'approved' || status === 'rejected';
 
   return (
     <View style={[styles.bubble, styles.bubbleAgent, styles.approvalBubble]}>
       <Text style={styles.approvalLabel}>Approval required</Text>
-      <Text style={styles.approvalText}>{text}</Text>
+      <Text style={styles.approvalAction}>{action}</Text>
+      {Object.entries(fields ?? {}).map(([key, value]) => (
+        <View key={key} style={styles.approvalFieldRow}>
+          <Text style={styles.approvalBullet}>•</Text>
+          <Text style={styles.approvalFieldText}>
+            {key}: {String(value)}
+          </Text>
+        </View>
+      ))}
 
       {status === 'resolving' && (
         <View style={styles.approvalResolving}>
@@ -99,7 +107,7 @@ function ApprovalBubble({ item, onResolve }) {
               activeOpacity={0.85}
             >
               <Ionicons name="close" size={18} color={colors.textPrimary} />
-              <Text style={styles.approvalButtonText}>Reject</Text>
+              <Text style={styles.approvalButtonText} numberOfLines={1}>Reject</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.approvalButton, styles.approveButton]}
@@ -107,7 +115,7 @@ function ApprovalBubble({ item, onResolve }) {
               activeOpacity={0.85}
             >
               <Ionicons name="checkmark" size={18} color={colors.textPrimary} />
-              <Text style={styles.approvalButtonText}>Approve</Text>
+              <Text style={styles.approvalButtonText} numberOfLines={1}>Approve</Text>
             </TouchableOpacity>
           </View>
         </>
@@ -135,11 +143,26 @@ export default function Chat() {
 
     postChatStream(text, {
       onStep: (content) => setStepText(content),
-      onApproval: (approvalId, content) => {
+      onContext: (content) => {
+        setMessages((prev) => [...prev, { id: nextId(), role: 'agent', text: content }]);
+      },
+      onApproval: (ev) => {
         setMessages((prev) => [
           ...prev,
-          { id: nextId(), role: 'approval', approvalId, text: content, status: 'pending' },
+          {
+            id: nextId(),
+            role: 'approval',
+            approvalId: ev.approval_id,
+            action: ev.action,
+            fields: ev.fields,
+            status: 'pending',
+          },
         ]);
+        // The backend closes the stream right after an "approval" event —
+        // no "final" follows for this request, so clear the typing state
+        // here too or it stays pinned on the last step's label forever.
+        setStepText(null);
+        setSending(false);
       },
       onFinal: (content) => {
         setMessages((prev) => [...prev, { id: nextId(), role: 'agent', text: content }]);
@@ -278,7 +301,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   bubbleUser: { alignSelf: 'flex-end', backgroundColor: colors.elevated },
-  bubbleAgent: { alignSelf: 'flex-start', backgroundColor: colors.surface },
+  bubbleAgent: { backgroundColor: colors.surface },
   bubbleText: { color: colors.textPrimary, fontFamily: fonts.regular, fontSize: 16, lineHeight: 22 },
   bubbleError: { backgroundColor: colors.surface },
   bubbleErrorText: {
@@ -288,7 +311,14 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 21,
   },
-  approvalBubble: { borderWidth: 1, borderColor: colors.elevated },
+  approvalBubble: {
+    borderWidth: 1,
+    borderColor: colors.elevated,
+    // Override the 85% cap from styles.bubble and guarantee enough width
+    // for the two side-by-side buttons even when field values are short.
+    maxWidth: '92%',
+    minWidth: 280,
+  },
   approvalLabel: {
     color: colors.textSecondary,
     fontFamily: fonts.semibold,
@@ -297,7 +327,25 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: spacing.xs,
   },
-  approvalText: {
+  approvalAction: {
+    color: colors.textPrimary,
+    fontFamily: fonts.semibold,
+    fontSize: 16,
+    marginBottom: spacing.xs,
+  },
+  approvalFieldRow: {
+    flexDirection: 'row',
+    marginTop: 2,
+  },
+  approvalBullet: {
+    color: colors.textSecondary,
+    fontFamily: fonts.regular,
+    fontSize: 15,
+    lineHeight: 21,
+    marginRight: spacing.sm,
+  },
+  approvalFieldText: {
+    flex: 1,
     color: colors.textPrimary,
     fontFamily: fonts.regular,
     fontSize: 15,
@@ -313,6 +361,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
     borderRadius: radius.md,
     gap: spacing.xs,

@@ -44,15 +44,12 @@ def create_schema() -> None:
     sql = """
         -- ------------------------------------------------------------------ --
         -- SURGEONS
-        -- The humans who will use the Slack bot.
-        -- slack_user_id lets us route approval tickets to the right person.
         -- ------------------------------------------------------------------ --
         CREATE TABLE IF NOT EXISTS surgeons (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             name          TEXT    NOT NULL,
             email         TEXT    NOT NULL UNIQUE,
-            specialty     TEXT    NOT NULL,
-            slack_user_id TEXT
+            specialty     TEXT    NOT NULL
         );
 
         -- ------------------------------------------------------------------ --
@@ -63,6 +60,7 @@ def create_schema() -> None:
             name                  TEXT    NOT NULL,
             date_of_birth         TEXT    NOT NULL,   -- stored as ISO-8601: "1985-04-23"
             blood_type            TEXT,
+            gender                TEXT,
             medical_record_number TEXT    NOT NULL UNIQUE
         );
 
@@ -140,6 +138,45 @@ def create_schema() -> None:
                             CHECK(approval_status IN ('pending', 'approved', 'rejected')),
             created_at       TEXT NOT NULL DEFAULT (datetime('now')),
             expires_at       TEXT
+        );
+        
+        CREATE TABLE IF NOT EXISTS patient_documents (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_id       INTEGER REFERENCES patients(id),
+            document_type    TEXT NOT NULL,
+            summary          TEXT NOT NULL,
+            file_path        TEXT,            
+            surgeon_notes    TEXT,         
+            uploaded_by      INTEGER REFERENCES surgeons(id),
+            created_at       TEXT DEFAULT (datetime('now'))
+        );
+        
+        CREATE TABLE IF NOT EXISTS patient_vitals (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT, 
+            patient_id                  INTEGER REFERENCES patients(id), 
+            recorded_by                 INTEGER REFERENCES surgeons(id),
+            recorded_at                 TEXT DEFAULT (datetime('now')),
+            weight_kg                   REAL, 
+            height_cm                   REAL,
+            o2_saturation               REAL, 
+            temperature_celsius         REAL,
+            blood_pressure_systolic     INTEGER,
+            blood_pressure_diastolic    INTEGER, 
+            heart_rate                  INTEGER, 
+            respiration_rate            INTEGER, 
+            notes                       TEXT
+        );
+        
+        CREATE TABLE IF NOT EXISTS investigation_log (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT, 
+            patient_id          INTEGER REFERENCES patients(id), 
+            test_name           TEXT NOT NULL, 
+            test_value          TEXT NOT NULL,
+            unit                TEXT, 
+            reference_range     TEXT,
+            is_abnormal         INTEGER, 
+            tested_at           TEXT NOT NULL DEFAULT (datetime('now')),
+            notes               TEXT
         );
     """
 

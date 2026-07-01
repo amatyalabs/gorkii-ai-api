@@ -1,37 +1,15 @@
 import { API_BASE_URL, SURGEON_ID } from '../constants/config';
 
-// Backend contract (CLAUDE.md):
-//   POST /chat  body { message, surgeon_id } -> { response }
-// Runs the agent loop; the response may be a normal answer OR a message
-// saying an action needs approval. Here we just surface the string.
-export async function postChat(message) {
-  const res = await fetch(`${API_BASE_URL}/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, surgeon_id: SURGEON_ID }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Chat request failed (HTTP ${res.status})`);
-  }
-
-  const data = await res.json();
-  return data.response;
-}
-
 // POST /chat/stream — same contract, but the agent loop streams progress.
 // Server sends SSE: "data: {\"type\":\"step\"|\"final\"|\"error\", ...}\n\n"
 // per event. React Native's fetch doesn't expose a readable response-body
 // stream reliably, so this uses XMLHttpRequest's onprogress, where
 // responseText accumulates the full response so far on every tick.
-export function postChatStream(message, { onStep, onFinal, onApproval, onError } = {}) {
+export function postChatStream(message, { onStep, onFinal, onApproval, onContext, onError } = {}) {
   const xhr = new XMLHttpRequest();
   let eventsHandled = 0;
 
-  xhr.open('POST', `${API_BASE_URL}/chat/stream`);
-  xhr.setRequestHeader('Content-Type', 'application/json');
-
-  xhr.onprogress = () => {
+  const processEvents = () => {
     const events = xhr.responseText.split('\n\n').filter(Boolean);
     while (eventsHandled < events.length) {
       const dataLine = events[eventsHandled]
@@ -54,13 +32,24 @@ export function postChatStream(message, { onStep, onFinal, onApproval, onError }
 
       if (parsed.type === 'step') onStep?.(parsed.content);
       else if (parsed.type === 'final') onFinal?.(parsed.content);
-      else if (parsed.type === 'approval') onApproval?.(parsed.approval_id, parsed.content);
+      else if (parsed.type === 'approval') onApproval?.(parsed);
+      else if (parsed.type === 'context') onContext?.(parsed.content);
       else if (parsed.type === 'error') onError?.(new Error(parsed.content));
     }
   };
 
+  xhr.open('POST', `${API_BASE_URL}/chat/stream`);
+  xhr.setRequestHeader('Content-Type', 'application/json');
+
+  xhr.onprogress = processEvents;
+
   xhr.onerror = () => onError?.(new Error('Network request failed'));
   xhr.onload = () => {
+    // The server can close the connection in the same tick as the last
+    // SSE event (e.g. "approval", which ends the stream immediately with
+    // no trailing "final"). onprogress isn't guaranteed to fire again for
+    // that last chunk, so re-run the parse here to avoid dropping it.
+    processEvents();
     if (xhr.status < 200 || xhr.status >= 300) {
       onError?.(new Error(`Chat stream failed (HTTP ${xhr.status})`));
     }
@@ -78,7 +67,7 @@ export async function resolveApproval(approvalId, status) {
   const res = await fetch(`${API_BASE_URL}/approvals/${approvalId}/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status }),
+    body: JSON.stringify({ status, surgeon_id: SURGEON_ID }),
   });
 
   if (!res.ok) {
