@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.14.1",
     "anthropic>=0.109.1",
+    "assemblyai>=0.64.29",
     "faker>=40.23.0",
     "fastapi>=0.137.0",
     "mcp[cli]>=1.27.2",

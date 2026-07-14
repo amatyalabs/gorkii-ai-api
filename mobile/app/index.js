@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
+import BrandMark from '../components/BrandMark';
 import { colors, fonts, radius, spacing } from '../constants/theme';
 
 // Step 1 of the build order: the login gate.
@@ -19,6 +20,7 @@ export default function Login() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [focusedField, setFocusedField] = useState(null); // 'email' | 'password' | null
 
   const canSubmit = email.trim().length > 0 && password.length > 0;
 
@@ -29,11 +31,16 @@ export default function Login() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <View style={styles.inner}>
+          {/* Shared brand mark — identical to the chat screen's logo. */}
+          <View style={styles.logo}>
+            <BrandMark size={60} />
+          </View>
+
           <Text style={styles.title}>Doctors Nepal</Text>
           <Text style={styles.subtitle}>Clinical decision support</Text>
 
           <TextInput
-            style={styles.input}
+            style={[styles.input, focusedField === 'email' && styles.inputFocused]}
             placeholder="Email"
             placeholderTextColor={colors.textSecondary}
             autoCapitalize="none"
@@ -41,14 +48,18 @@ export default function Login() {
             keyboardType="email-address"
             value={email}
             onChangeText={setEmail}
+            onFocus={() => setFocusedField('email')}
+            onBlur={() => setFocusedField(null)}
           />
           <TextInput
-            style={styles.input}
+            style={[styles.input, focusedField === 'password' && styles.inputFocused]}
             placeholder="Password"
             placeholderTextColor={colors.textSecondary}
             secureTextEntry
             value={password}
             onChangeText={setPassword}
+            onFocus={() => setFocusedField('password')}
+            onBlur={() => setFocusedField(null)}
           />
 
           <TouchableOpacity
@@ -73,10 +84,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: spacing.lg,
   },
+  logo: {
+    alignSelf: 'center',
+    marginBottom: spacing.lg,
+  },
   title: {
     color: colors.textPrimary,
     fontFamily: fonts.bold,
-    fontSize: 30,
+    fontSize: 28,
     textAlign: 'center',
   },
   subtitle: {
@@ -91,15 +106,18 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     color: colors.textPrimary,
     fontFamily: fonts.regular,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
+    borderWidth: 1.5,
+    borderColor: 'transparent',
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
     fontSize: 16,
     marginBottom: spacing.md,
   },
+  inputFocused: { borderColor: 'rgba(217,119,87,0.55)' },
   button: {
     backgroundColor: colors.primary,
-    borderRadius: radius.md,
+    borderRadius: radius.lg,
     paddingVertical: spacing.md,
     alignItems: 'center',
     marginTop: spacing.sm,

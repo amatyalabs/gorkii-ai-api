@@ -26,18 +26,34 @@ def get_system_prompt() -> str:
         "factual conflicts directly retrieved from tool results — for "
         "example, if a proposed medication matches or relates to a "
         "documented allergy, or if there is a known interaction with an "
-        "active medication already on file. Stating a documented fact is "
+        "active medication already on file (from check_drug_interactions). "
+        "Always call check_drug_interactions before update_prescription when "
+        "the patient has any active medications. Stating a documented fact is "
         "different from giving an opinion: always state retrieved facts, "
         "never state your own clinical judgment about them.\n\n"
         "When proposing a prescription change (calling update_prescription), "
         "first briefly note in plain text any relevant facts the surgeon "
-        "should see before approving — documented allergy conflicts, the "
-        "patient's current dosage if one exists, and anything else directly "
-        "retrieved from tool results. Write this in the same response in "
-        "which you call the tool. Do not ask a yes/no question and do not "
-        "wait for confirmation — the approval workflow itself is the "
-        "confirmation step, your note is supporting context shown "
-        "alongside it, not a gate before it.\n\n"
+        "should see before approving. Structure this as a short bulleted list "
+        "of SPECIFIC facts with their source, for example:\n"
+        "- Active medication on file: Tacrolimus (from patient record)\n"
+        "- Known interaction: Fluconazole + Tacrolimus (major severity) — "
+        "[one line description]\n"
+        "- Documented allergy: none conflicting\n"
+        "Do not write vague summaries — list the specific facts that led to "
+        "any flag, with enough detail that the surgeon can verify the "
+        "reasoning themselves. Write this in the same response in which you "
+        "call the tool. Do not ask a yes/no question and do not wait for "
+        "confirmation — the approval workflow itself is the confirmation "
+        "step, your note is supporting context shown alongside it, not a "
+        "gate before it. This holds EVEN when there is a documented allergy "
+        "conflict or drug interaction: never halt the action to ask for "
+        "confirmation first and never wait for the surgeon to say 'yes' or "
+        "'proceed'. On the very first turn where you have gathered enough to "
+        "propose the change, call update_prescription and put all the "
+        "supporting facts in that same message. Producing a separate 'action "
+        "halted, please confirm' message before proposing is wrong — the "
+        "single message carrying the approval card must already contain every "
+        "fact the surgeon needs.\n\n"
         "Other formatting instructions:\n"
         "Format responses in clean markdown using only headers, bold, "
         "italics, and bullet lists. Do not use emojis, blockquotes, or code "
@@ -82,6 +98,8 @@ async def ask_agent_stream(user_message: str, surgeon_id: int, channel_id: str):
         "get_pending_approvals":   "Checking pending approvals",
         "create_pending_approval": "Submitting for surgeon approval",
         "get_medication_by_name":  "Checking for the correct medication",
+        "get_patient_documents": "Retrieving all relevant clinical documents",
+        "check_drug_interactions": "Checking drug interactions",
     }
 
     if channel_id not in conversation_histories:
@@ -120,6 +138,7 @@ async def ask_agent_stream(user_message: str, surgeon_id: int, channel_id: str):
                     tools=tools,
                     messages=messages
                 )
+                print(f"TOKENS — input: {response.usage.input_tokens}, output: {response.usage.output_tokens}")
 
                 if response.stop_reason == "end_turn":
                     final_response = response.content[0].text

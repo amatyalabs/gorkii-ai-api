@@ -23,7 +23,26 @@
     },
     "plugins": [
       "expo-router",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Allow Doctors Nepal to use the camera to capture clinical documents.",
+          "photosPermission": "Allow Doctors Nepal to access photos to upload clinical documents."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Doctors Nepal to use the camera to capture patient documents."
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Doctors Nepal to use the microphone to dictate messages to the assistant."
+        }
+      ]
     ]
   }
 }

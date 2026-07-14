@@ -10,11 +10,14 @@ export const colors = {
   base: '#1E1F22', // deepest background
   surface: '#2B2D31', // cards, input fields
   elevated: '#313338', // elevated surface (e.g. user message bubble)
+  surfaceHigh: '#37393F', // most-elevated surface (approval card)
   textPrimary: '#F2F3F5',
   textSecondary: '#B5BAC1',
   safe: '#3BA55D', // reserved for true safety/approved states
   risk: '#ED4245', // high-risk / approval-required accent
-  primary: '#D97757', // generic CTA accent (Login, Send)
+  primary: '#D97757', // generic CTA accent (Login, Send) — reserved for
+  // real actions only; chrome buttons (back, menu) stay ghost/transparent
+  // so orange keeps its meaning as "do something" rather than decoration.
 };
 
 export const spacing = { xs: 4, sm: 8, md: 16, lg: 24, xl: 32 };

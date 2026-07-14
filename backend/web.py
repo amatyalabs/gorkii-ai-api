@@ -1,7 +1,10 @@
 import json
 import base64
 import os
+import tempfile
 import anthropic
+import assemblyai as aai
+import fitz
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -35,9 +38,219 @@ class ResolveRequest(BaseModel):
     status: str   # "approved" | "rejected"
     surgeon_id: int
 
+class MedicationItem(BaseModel):
+    name: str
+    dose: str | None = None
+    frequency: str | None = None
+
+class AllergyItem(BaseModel):
+    name: str
+    confidence: str | None = None
+    severity: str | None = None   # surgeon may have edited this in the confirm UI
+
+class OnboardRequest(BaseModel):
+    name: str
+    age: int | None = None
+    sex: str | None = None
+    allergies: list[AllergyItem] = []
+    active_medications: list[MedicationItem] = []
+    primary_diagnosis: str | None = None
+    surgeon_id: int
+    source_ref: int | None = None   # document_id from /patients/extract, if any
+
+class VoiceExtractRequest(BaseModel):
+    text: str
+    surgeon_id: int
+
 @app.get("/health")
 async def get_health():
     return {"status": "ok"}
+
+
+@app.get("/audit-log")
+async def audit_log(limit: int = 50):
+    try:
+        from tools import get_audit_log
+        results = get_audit_log(limit)
+        return {"entries": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/patients/search")
+async def search_patients(name: str):
+    try:
+        from tools import find_patient_by_name
+        results = find_patient_by_name(name)
+        return {"patients": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/patients/extract") 
+async def extract_patients(
+    file: UploadFile = File(...),
+    surgeon_id: int = Form(...),
+):
+    try:
+        contents = await file.read()
+        
+        if file.content_type == "application/pdf":
+            pdf_doc = fitz.open(stream=contents, filetype="pdf")
+            pix = pdf_doc[0].get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            image_data = base64.b64encode(img_bytes).decode("utf-8")
+            media_type = "image/png"
+        else:
+            image_data = base64.b64encode(contents).decode("utf-8")
+            media_type = file.content_type
+
+        
+        client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type, 
+                        "data": image_data
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": """Extract patient information from this document and return it 
+                    in exactly this JSON structure:
+
+                    {
+                    "source_type": "lab_result or referral_letter or discharge_summary or other",
+                    "patient": {
+                        "name": "full name as written",
+                        "age": null,
+                        "sex": "Male or Female or null"
+                    },
+                    "allergies": [
+                        {"name": "substance name", "confidence": "documented or inferred"}
+                    ],
+                    "active_medications": [
+                        {"name": "drug name", "dose": "dosage", "frequency": "frequency"}
+                    ],
+                    "primary_diagnosis": "as written in document or null"
+                    }""" 
+                    }
+            ]
+        }]
+        response = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=
+            "You are a clinical document extraction assistant. "
+            "You must respond with valid JSON only — no preamble, no explanation, "
+            "no markdown fences. If a field cannot be determined from the document, "
+            "use null for that field. Never guess or infer values not explicitly  "
+            "present in the document.",
+            messages=messages
+        )
+        raw = response.content[0].text.strip()
+        # strip markdown fences if Claude adds them despite instructions
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+        extracted = json.loads(raw)
+        return {"extracted": extracted}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Text counterpart to /patients/extract — the Voice capture tab has no
+# document photo, only a dictation transcript (already produced by
+# /voice/transcribe), so this runs the same extraction contract against text
+# instead of an image and returns the identical { "extracted": {...} } shape.
+@app.post("/patients/extract-voice")
+async def extract_patient_voice(request: VoiceExtractRequest):
+    try:
+        client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        messages = [{
+            "role": "user",
+            "content": f"""Extract patient information from this surgeon's spoken dictation
+            and return it in exactly this JSON structure:
+
+            {{
+            "source_type": "voice",
+            "patient": {{
+                "name": "full name as stated",
+                "age": null,
+                "sex": "Male or Female or null"
+            }},
+            "allergies": [
+                {{"name": "substance name", "confidence": "documented or inferred"}}
+            ],
+            "active_medications": [
+                {{"name": "drug name", "dose": "dosage", "frequency": "frequency"}}
+            ],
+            "primary_diagnosis": "as stated or null"
+            }}
+
+            Dictation transcript:
+            \"\"\"{request.text}\"\"\""""
+        }]
+        response = await client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=
+            "You are a clinical dictation extraction assistant. "
+            "You must respond with valid JSON only — no preamble, no explanation, "
+            "no markdown fences. If a field cannot be determined from the transcript, "
+            "use null for that field. Never guess or infer values not explicitly stated. "
+            "Speech-to-text transcripts sometimes mishear drug or dosage names — use "
+            "clinical judgment to correct obvious transcription errors, but do not "
+            "invent information that isn't in the transcript.",
+            messages=messages
+        )
+        raw = response.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+        extracted = json.loads(raw)
+        return {"extracted": extracted}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/patients/onboard")
+async def onboard(request: OnboardRequest):
+    try:
+        from tools import onboard_patient
+        from datetime import date
+
+        dob = None
+        if request.age:
+            dob = date(date.today().year - request.age, 1, 1).isoformat()
+
+        allergies = [
+            {"name": a.name, "severity": a.severity or "moderate"}
+            for a in request.allergies
+        ]
+        medications = [
+            {"name": m.name, "dose": m.dose, "frequency": m.frequency}
+            for m in request.active_medications
+        ]
+
+        patient_id = onboard_patient(
+            name=request.name,
+            date_of_birth=dob,
+            sex=request.sex,
+            allergies=allergies,
+            medications=medications,
+            primary_diagnosis=request.primary_diagnosis,
+            surgeon_id=request.surgeon_id,
+        )
+        return {"patient_id": patient_id, "status": "onboarded"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # @app.post("/chat")
 # async def chat(request: ChatRequest):
@@ -87,7 +300,6 @@ async def upload_document(
         contents = await file.read()
         
         if file.content_type == "application/pdf":
-            import fitz
             pdf_doc = fitz.open(stream=contents, filetype="pdf")
             pix = pdf_doc[0].get_pixmap(dpi=150)
             img_bytes = pix.tobytes("png")
@@ -127,4 +339,42 @@ async def upload_document(
         return {"document_id": document_id, "summary": summary}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Declared as a plain `def` (not `async def`) — the assemblyai SDK's
+# Transcriber.transcribe() is a blocking call (it polls internally), and
+# FastAPI runs sync path operations in a worker thread automatically so it
+# doesn't block the event loop.
+@app.post("/voice/transcribe")
+def transcribe_voice(file: UploadFile = File(...)):
+    tmp_path = None
+    try:
+        aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
+        contents = file.file.read()
+
+        suffix = os.path.splitext(file.filename or "")[1] or ".m4a"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
+
+        config = aai.TranscriptionConfig(
+            speech_models=["universal-3-5-pro", "universal-2"],
+            domain="medical-v1",  # medical vocabulary mode — drug/anatomy terms, dosages
+            prompt=(
+                "Clinical dictation by a surgeon in a hospital setting — "
+                "patient details, medications, diagnoses, or a request to "
+                "a clinical assistant."
+            ),
+        )
+        transcript = aai.Transcriber(config=config).transcribe(tmp_path)
+        if transcript.status == aai.TranscriptStatus.error:
+            raise HTTPException(status_code=500, detail=transcript.error)
+        return {"text": transcript.text}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
