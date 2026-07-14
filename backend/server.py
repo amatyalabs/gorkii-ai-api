@@ -1,5 +1,5 @@
 from mcp.server.fastmcp import FastMCP
-from tools import get_pending_approvals as _get_pending_approvals, get_patient_allergies as _get_patient_allergies, get_active_medications as _get_active_medications, get_medication_by_name as _get_medication_by_name, find_patient_by_name as _find_patient_by_name, get_active_prescription as _get_active_prescription, update_prescription as _update_prescription, ProposedAction, Decision
+from tools import get_patient_documents as _get_patient_documents, get_pending_approvals as _get_pending_approvals, get_patient_allergies as _get_patient_allergies, get_active_medications as _get_active_medications, get_medication_by_name as _get_medication_by_name, find_patient_by_name as _find_patient_by_name, get_active_prescription as _get_active_prescription, update_prescription as _update_prescription, check_drug_interactions as _check_drug_interactions, ProposedAction, Decision
 
 mcp = FastMCP("hospital")
 
@@ -11,8 +11,12 @@ def get_patient_allergies(patient_id: int) -> list[str]:
     An empty result means no allergies are recorded in this system — not
     that the patient has no allergies. If the list is empty, tell the surgeon
     the allergy record may be incomplete and advise independent verification.
-    If a proposed medication matches or is related to a known allergen,
-    flag the conflict clearly and do not proceed without surgeon confirmation."""
+    If a proposed medication matches or is related to a known allergen, do NOT
+    halt and ask a separate yes/no question first. Proceed to propose the
+    prescription change (call update_prescription) in the SAME turn and state
+    the allergy conflict as a documented fact alongside it. The approval card
+    that results IS the surgeon's confirmation step — never gate the action
+    behind an extra confirmation message before it."""
     return _get_patient_allergies(patient_id)
     
 @mcp.tool()
@@ -97,6 +101,45 @@ def get_pending_approvals(surgeon_id: int) -> list[dict]:
     or to check the status of a previously submitted request.
     """
     return _get_pending_approvals(surgeon_id)
+
+@mcp.tool()
+def get_patient_documents(patient_id: int) -> list[dict]:
+    """
+    Retrieve all stored clinical documents for a patient, ordered most
+    recent first. Each result includes document_type, summary,
+    surgeon_notes, uploaded_by, and created_at.
+
+    Call this whenever a surgeon asks about lab results, radiology reports,
+    scanned documents, or anything uploaded for a patient — even if they
+    don't use the word "document" explicitly. Phrases like "what did the
+    labs show", "any recent results", "what does her CBC say", or "did we
+    get anything back on this patient" all mean call this tool. If you
+    already resolved a patient_id earlier in this conversation, use it —
+    you do not need to call find_patient_by_name again for a follow-up
+    question about the same patient.
+
+    If the list is empty, tell the surgeon no documents have been
+    uploaded for this patient yet — do not imply there are no records,
+    only that none have been scanned into this system.
+    """
+    return _get_patient_documents(patient_id)
+
+@mcp.tool()
+def check_drug_interactions(proposed_medication: str, patient_id: int) -> list[dict]:
+    """
+    Check a proposed medication against the patient's active medications
+    for known dangerous drug interactions. Returns a list of interactions
+    found — each includes the conflicting medication, severity (major or
+    moderate), and a description of the risk.
+
+    ALWAYS call this before calling update_prescription. If any interaction
+    is found, state it as a documented fact in your response — do not add
+    your own clinical judgment about whether to proceed, that is the
+    surgeon's decision. An empty result means no known interaction was
+    found in this system's interaction database — it does not guarantee
+    no interaction exists; this is a curated list, not exhaustive.
+    """
+    return _check_drug_interactions(proposed_medication, patient_id)
 
 if __name__ == "__main__":
     mcp.run()

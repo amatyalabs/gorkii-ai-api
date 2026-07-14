@@ -13,7 +13,44 @@ import sqlite3
 from database import create_schema, get_connection
 from faker import Faker
 
-fake = Faker(['ne_NP', 'en_US'])
+fake = Faker()  # English only for emails, dates, MRNs etc.
+
+# ------------------------------------------------------------------ #
+# Nepali names (romanized — readable but authentically Nepali)        #
+# ------------------------------------------------------------------ #
+
+NEPALI_FIRST_NAMES = [
+    "Ramesh", "Sita", "Bikash", "Anita", "Prakash",
+    "Sunita", "Rajesh", "Priya", "Dipak", "Kamala",
+    "Narayan", "Gita", "Suresh", "Mina", "Binod",
+    "Shanta", "Roshan", "Puja", "Manoj", "Sarita",
+    "Anil", "Prabha", "Sanjay", "Nirmala", "Bijay",
+    "Rekha", "Nabin", "Sabita", "Santosh", "Kopila",
+    "Dinesh", "Durga", "Prabin", "Laxmi", "Ashok",
+    "Sushila", "Kamal", "Indira", "Gopal", "Ambika",
+    "Deepak", "Mandira", "Rajan", "Chandrika", "Mohan",
+    "Pushpa", "Hari", "Radha", "Bhim", "Sharada",
+    "Umesh", "Bimala", "Kiran", "Savitri", "Tanka",
+    "Yasoda", "Dhan", "Hira", "Tirtha", "Parbati",
+]
+
+NEPALI_LAST_NAMES = [
+    "Thapa", "Sharma", "Gurung", "Shrestha", "Karki",
+    "Rai", "Tamang", "Limbu", "Magar", "Pandey",
+    "Adhikari", "Bhandari", "Khadka", "Poudel", "Subedi",
+    "Basnet", "KC", "Bhattarai", "Chhetri", "Gautam",
+    "Acharya", "Dahal", "Regmi", "Upreti", "Dhakal",
+    "Koirala", "Tiwari", "Joshi", "Ghimire", "Parajuli",
+    "Aryal", "Sapkota", "Rijal", "Baral", "Pokhrel",
+    "Neupane", "Lama", "Budhathoki", "Baniya", "Silwal",
+    "Mahato", "Yadav", "Shah", "Raut", "Chaudhary",
+    "Sah", "Mandal", "Sinha", "Tharu", "Giri",
+]
+
+
+def nepali_name() -> str:
+    return f"{random.choice(NEPALI_FIRST_NAMES)} {random.choice(NEPALI_LAST_NAMES)}"
+
 
 # ------------------------------------------------------------------ #
 # Reference data                                                       #
@@ -53,17 +90,18 @@ MEDICATIONS = [
     ("Metoprolol",     "Beta Blocker",            "50mg",   "Do not stop abruptly"),
 ]
 
-# (test_name, unit, ref_low, ref_high) — used to generate investigation rows
-# and automatically flag abnormals.
+# (test_name, unit, ref_low, ref_high)
 INVESTIGATION_TEMPLATES = [
-    ("Hemoglobin",       "g/dL",    12.0, 17.5),
-    ("WBC",              "10^9/L",  4.0,  11.0),
-    ("Platelets",        "10^9/L",  150,  400),
-    ("Creatinine",       "mg/dL",   0.6,  1.2),
+    ("Hemoglobin",       "g/dL",   12.0, 17.5),
+    ("WBC",              "10^9/L",  4.0, 11.0),
+    ("Platelets",        "10^9/L", 150,  400),
+    ("Creatinine",       "mg/dL",   0.6,   1.2),
     ("Tacrolimus level", "ng/mL",   5.0,  15.0),
-    ("Potassium",        "mEq/L",   3.5,  5.0),
+    ("Potassium",        "mEq/L",   3.5,   5.0),
     ("ALT",              "U/L",     7,    56),
-    ("Sodium",           "mEq/L",   136,  145),
+    ("Sodium",           "mEq/L",  136,  145),
+    ("Urea",             "mg/dL",  15,    45),
+    ("Cyclosporine level","ng/mL", 100,  400),
 ]
 
 
@@ -71,10 +109,11 @@ INVESTIGATION_TEMPLATES = [
 # Seeders                                                              #
 # ------------------------------------------------------------------ #
 
-def seed_surgeons(conn: sqlite3.Connection, n: int = 6) -> int:
+def seed_surgeons(conn: sqlite3.Connection, n: int = 8) -> int:
+    """Insert n surgeons with Nepali names."""
     rows = [
         (
-            fake.name(),
+            nepali_name(),
             fake.unique.email(),
             random.choice(SPECIALTIES),
         )
@@ -88,9 +127,10 @@ def seed_surgeons(conn: sqlite3.Connection, n: int = 6) -> int:
 
 
 def seed_patients(conn: sqlite3.Connection, n: int = 30) -> int:
+    """Insert n patients with Nepali names and gender."""
     rows = [
         (
-            fake.name(),
+            nepali_name(),
             fake.date_of_birth(minimum_age=18, maximum_age=80).isoformat(),
             random.choice(BLOOD_TYPES),
             random.choice(GENDERS),
@@ -176,22 +216,23 @@ def seed_vitals(conn: sqlite3.Connection) -> int:
     rows = []
     for pid in patient_ids:
         for _ in range(random.randint(2, 3)):
-            recorded_at = fake.date_time_between(start_date="-6m", end_date="now").isoformat()
+            recorded_at = fake.date_time_between(
+                start_date="-6m", end_date="now"
+            ).isoformat()
             rows.append((
                 pid,
                 random.choice(surgeon_ids),
                 recorded_at,
-                round(random.uniform(50.0, 95.0), 1),   # weight_kg
-                round(random.uniform(150.0, 185.0), 1), # height_cm
-                round(random.uniform(94.0, 99.0), 1),   # o2_saturation
-                round(random.uniform(36.5, 37.8), 1),   # temperature_celsius
-                random.randint(110, 145),                # blood_pressure_systolic
-                random.randint(70, 95),                  # blood_pressure_diastolic
-                random.randint(58, 95),                  # heart_rate
-                random.randint(12, 20),                  # respiration_rate
-                None,                                    # notes
+                round(random.uniform(50.0, 95.0), 1),    # weight_kg
+                round(random.uniform(150.0, 185.0), 1),  # height_cm
+                round(random.uniform(94.0, 99.0), 1),    # o2_saturation
+                round(random.uniform(36.5, 37.8), 1),    # temperature_celsius
+                random.randint(110, 145),                 # blood_pressure_systolic
+                random.randint(70, 95),                   # blood_pressure_diastolic
+                random.randint(58, 95),                   # heart_rate
+                random.randint(12, 20),                   # respiration_rate
+                None,                                     # notes
             ))
-
     conn.executemany(
         """INSERT INTO patient_vitals
                (patient_id, recorded_by, recorded_at,
@@ -207,9 +248,8 @@ def seed_vitals(conn: sqlite3.Connection) -> int:
 def seed_investigations(conn: sqlite3.Connection) -> int:
     """
     Give each patient 3-5 lab results using clinically relevant tests.
-    Tacrolimus level is especially relevant for transplant patients.
-    Values are generated within and slightly outside reference ranges
-    so the agent has real abnormals to surface.
+    ~25% of values are flagged abnormal to give the agent real data to surface.
+    Tacrolimus and Cyclosporine levels are especially relevant for transplant patients.
     """
     patient_ids = [r["id"] for r in conn.execute("SELECT id FROM patients").fetchall()]
 
@@ -217,9 +257,8 @@ def seed_investigations(conn: sqlite3.Connection) -> int:
     for pid in patient_ids:
         tests = random.sample(INVESTIGATION_TEMPLATES, k=random.randint(3, 5))
         for test_name, unit, ref_low, ref_high in tests:
-            # ~25% chance the value is abnormal (outside reference range)
             if random.random() < 0.25:
-                # abnormal — go outside the range
+                # abnormal value — outside reference range
                 if random.random() < 0.5:
                     value = round(random.uniform(ref_low * 0.6, ref_low * 0.95), 2)
                 else:
@@ -229,20 +268,20 @@ def seed_investigations(conn: sqlite3.Connection) -> int:
                 value = round(random.uniform(ref_low, ref_high), 2)
                 is_abnormal = 0
 
-            ref_range = f"{ref_low}-{ref_high}"
-            tested_at = fake.date_time_between(start_date="-3m", end_date="now").isoformat()
+            tested_at = fake.date_time_between(
+                start_date="-3m", end_date="now"
+            ).isoformat()
 
             rows.append((
                 pid,
                 test_name,
                 str(value),
                 unit,
-                ref_range,
+                f"{ref_low}-{ref_high}",
                 is_abnormal,
                 tested_at,
-                None,   # notes
+                None,
             ))
-
     conn.executemany(
         """INSERT INTO investigation_log
                (patient_id, test_name, test_value, unit,
