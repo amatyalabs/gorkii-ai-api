@@ -1,5 +1,5 @@
 from datetime import date
-import os, anthropic, sys, traceback
+import os, anthropic, sys, traceback, asyncio
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -189,10 +189,22 @@ async def ask_agent_stream(user_message: str, surgeon_id: int, channel_id: str):
                                 print(f"DEBUG: Decision: {decision}")
 
                                 if Decision.SAFE == decision:
-                                    result = await session.call_tool(
-                                        block.name,
-                                        arguments=block.input
+                                    # TEMPORARY diagnostic (remove once root cause is
+                                    # confirmed): bounded timeout to pinpoint an
+                                    # otherwise-infinite hang seen on chained
+                                    # (multi-tool-call) requests. If this fires, the
+                                    # TimeoutError traceback (via the outer except
+                                    # below) confirms the hang is inside the MCP
+                                    # tool-call round-trip; if it never fires and the
+                                    # request is still stuck, the hang is elsewhere
+                                    # (e.g. the Claude API call or the SSE
+                                    # yield/streaming path).
+                                    print(f"DEBUG: About to call_tool: {block.name}", flush=True)
+                                    result = await asyncio.wait_for(
+                                        session.call_tool(block.name, arguments=block.input),
+                                        timeout=25,
                                     )
+                                    print(f"DEBUG: call_tool returned: {block.name}", flush=True)
                                     tool_results.append({
                                         "type": "tool_result",
                                         "tool_use_id": block.id,
