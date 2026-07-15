@@ -1,52 +1,69 @@
 """
-database.py — Connection management and schema creation.
+database.py — Connection management and schema creation (Postgres).
 
 Java analogy for this whole file:
-  get_connection()  =  opening a JDBC Connection
+  get_connection()  =  opening a JDBC Connection (try-with-resources)
   create_schema()   =  running your Flyway/Liquibase migrations
-  sqlite3.Row       =  a Map<String, Object> that also supports row["column_name"]
+  RealDictCursor    =  a Map<String, Object> that also supports row["column_name"]
 """
 
-import sqlite3
-from pathlib import Path
+import os
+from contextlib import contextmanager
 
-# Path(__file__) is the path of THIS file.
-# .parent gives us the folder it lives in.
-# So DB_PATH always points to hospital.db in the same folder, no matter where
-# you run the script from.  Java equivalent: Paths.get(getClass().getResource("").toURI())
-DB_PATH = Path(__file__).parent / "hospital.db"
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
+
+# SQLite never needed an env var, so this file never had to load .env itself —
+# other modules (client.py, web.py) did it as a side effect of import. Postgres
+# needs DATABASE_URL, so this file must be self-sufficient regardless of which
+# module imports it first (e.g. `python database.py`, or seed.py/verify.py,
+# neither of which imports client.py).
+load_dotenv()
+
+# Full connection string, e.g. postgresql://user:password@host:5432/dbname
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-def get_connection() -> sqlite3.Connection:
+@contextmanager
+def get_connection():
     """
-    Open and return a connection to the SQLite database.
-    Always use this inside a  `with get_connection() as conn:`  block —
-    that's Python's try-with-resources.  On exit it auto-commits or rolls back.
+    Open a connection to Postgres and yield it inside a `with` block —
+    that's Python's try-with-resources. On a clean exit it commits; on an
+    exception it rolls back; either way the connection is always closed
+    afterward.
+
+    Closing matters much more here than it did for SQLite: a Postgres
+    connection is a real TCP connection held server-side, and the rest of
+    this codebase opens a fresh one per function call — leaving them open
+    would exhaust Postgres's connection limit under real traffic. SQLite's
+    file-based connections never had that failure mode.
+
+    cursor_factory=RealDictCursor makes every row behave like a dict —
+    row["patient_id"] instead of row[0] — same as sqlite3.Row before.
     """
-    conn = sqlite3.connect(DB_PATH)
-
-    # row_factory makes every row behave like a dict:
-    #   row["patient_id"]  instead of  row[0]
-    # Much safer — column order changes won't silently break your code.
-    conn.row_factory = sqlite3.Row
-
-    # Enforce foreign-key constraints (SQLite skips them by default).
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def create_schema() -> None:
     """
     Create all tables if they don't already exist.
     Safe to call multiple times — IF NOT EXISTS makes it idempotent.
-    Java equivalent: a Flyway migration that only runs once.
     """
     sql = """
         -- ------------------------------------------------------------------ --
         -- SURGEONS
         -- ------------------------------------------------------------------ --
         CREATE TABLE IF NOT EXISTS surgeons (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            id            SERIAL  PRIMARY KEY,
             name          TEXT    NOT NULL,
             email         TEXT    NOT NULL UNIQUE,
             specialty     TEXT    NOT NULL
@@ -56,7 +73,7 @@ def create_schema() -> None:
         -- PATIENTS  (synthetic / fake data only during development)
         -- ------------------------------------------------------------------ --
         CREATE TABLE IF NOT EXISTS patients (
-            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            id                    SERIAL  PRIMARY KEY,
             name                  TEXT    NOT NULL,
             date_of_birth         TEXT    NOT NULL,   -- stored as ISO-8601: "1985-04-23"
             blood_type            TEXT,
@@ -71,7 +88,7 @@ def create_schema() -> None:
         -- not just your application code.
         -- ------------------------------------------------------------------ --
         CREATE TABLE IF NOT EXISTS allergies (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            id         SERIAL  PRIMARY KEY,
             patient_id INTEGER NOT NULL REFERENCES patients(id),
             substance  TEXT    NOT NULL,
             severity   TEXT    NOT NULL CHECK(severity IN ('mild', 'moderate', 'severe')),
@@ -82,7 +99,7 @@ def create_schema() -> None:
         -- MEDICATIONS  (a reference / lookup table)
         -- ------------------------------------------------------------------ --
         CREATE TABLE IF NOT EXISTS medications (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            id              SERIAL  PRIMARY KEY,
             name            TEXT    NOT NULL UNIQUE,
             category        TEXT    NOT NULL,
             typical_dosage  TEXT,
@@ -92,10 +109,9 @@ def create_schema() -> None:
         -- ------------------------------------------------------------------ --
         -- PRESCRIPTIONS
         -- Links a patient, a medication, and the prescribing surgeon together.
-        -- status is weighted toward 'active' in seed data to mirror reality.
         -- ------------------------------------------------------------------ --
         CREATE TABLE IF NOT EXISTS prescriptions (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            id            SERIAL  PRIMARY KEY,
             patient_id    INTEGER NOT NULL REFERENCES patients(id),
             medication_id INTEGER NOT NULL REFERENCES medications(id),
             surgeon_id    INTEGER NOT NULL REFERENCES surgeons(id),
@@ -116,8 +132,8 @@ def create_schema() -> None:
         -- the proposed action text, etc.) so you can replay any decision.
         -- ------------------------------------------------------------------ --
         CREATE TABLE IF NOT EXISTS audit_log (
-            id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp      TEXT    NOT NULL DEFAULT (datetime('now')),
+            id             SERIAL  PRIMARY KEY,
+            timestamp      TEXT    NOT NULL DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
             surgeon_id     INTEGER REFERENCES surgeons(id),
             patient_id     INTEGER REFERENCES patients(id),
             action_type    TEXT    NOT NULL,
@@ -126,64 +142,66 @@ def create_schema() -> None:
                            CHECK(decision IN ('safe', 'needs_approval', 'approved', 'rejected')),
             approved_by    INTEGER REFERENCES surgeons(id)
         );
-        
+
         CREATE TABLE IF NOT EXISTS pending_approvals (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            id               SERIAL  PRIMARY KEY,
             patient_id       INTEGER REFERENCES patients(id),
             action_type      TEXT NOT NULL,
             action_payload   TEXT NOT NULL,
-            description      TEXT NOT NULL,      
+            description      TEXT NOT NULL,
             approver_id      INTEGER REFERENCES surgeons(id),
             approval_status  TEXT NOT NULL DEFAULT 'pending'
                             CHECK(approval_status IN ('pending', 'approved', 'rejected')),
-            created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at       TEXT NOT NULL DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
             expires_at       TEXT
         );
-        
+
         CREATE TABLE IF NOT EXISTS patient_documents (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            id               SERIAL  PRIMARY KEY,
             patient_id       INTEGER REFERENCES patients(id),
             document_type    TEXT NOT NULL,
             summary          TEXT NOT NULL,
-            file_path        TEXT,            
-            surgeon_notes    TEXT,         
+            file_path        TEXT,
+            surgeon_notes    TEXT,
             uploaded_by      INTEGER REFERENCES surgeons(id),
-            created_at       TEXT DEFAULT (datetime('now'))
+            created_at       TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
         );
-        
+
         CREATE TABLE IF NOT EXISTS patient_vitals (
-            id                          INTEGER PRIMARY KEY AUTOINCREMENT, 
-            patient_id                  INTEGER REFERENCES patients(id), 
+            id                          SERIAL  PRIMARY KEY,
+            patient_id                  INTEGER REFERENCES patients(id),
             recorded_by                 INTEGER REFERENCES surgeons(id),
-            recorded_at                 TEXT DEFAULT (datetime('now')),
-            weight_kg                   REAL, 
+            recorded_at                 TEXT DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
+            weight_kg                   REAL,
             height_cm                   REAL,
-            o2_saturation               REAL, 
+            o2_saturation               REAL,
             temperature_celsius         REAL,
             blood_pressure_systolic     INTEGER,
-            blood_pressure_diastolic    INTEGER, 
-            heart_rate                  INTEGER, 
-            respiration_rate            INTEGER, 
+            blood_pressure_diastolic    INTEGER,
+            heart_rate                  INTEGER,
+            respiration_rate            INTEGER,
             notes                       TEXT
         );
-        
+
         CREATE TABLE IF NOT EXISTS investigation_log (
-            id                  INTEGER PRIMARY KEY AUTOINCREMENT, 
-            patient_id          INTEGER REFERENCES patients(id), 
-            test_name           TEXT NOT NULL, 
+            id                  SERIAL  PRIMARY KEY,
+            patient_id          INTEGER REFERENCES patients(id),
+            test_name           TEXT NOT NULL,
             test_value          TEXT NOT NULL,
-            unit                TEXT, 
+            unit                TEXT,
             reference_range     TEXT,
-            is_abnormal         INTEGER, 
-            tested_at           TEXT NOT NULL DEFAULT (datetime('now')),
+            is_abnormal         INTEGER,
+            tested_at           TEXT NOT NULL DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS'),
             notes               TEXT
         );
     """
 
     with get_connection() as conn:
-        conn.executescript(sql)
+        cur = conn.cursor()
+        cur.execute(sql)
 
-    print(f"Schema ready at: {DB_PATH}")
+    host = DATABASE_URL.split("@")[-1] if DATABASE_URL else "DATABASE_URL not set"
+    print(f"Schema ready on Postgres ({host})")
 
 
 # ----------------------------------------------------------------------- #

@@ -10,7 +10,7 @@ class ProposedAction(BaseModel):
     action_type: str
     writes_to_db: bool
     description: str
-    
+
 class Decision(Enum):
     SAFE = "safe"
     NEEDS_APPROVAL = "needs_approval"
@@ -20,10 +20,10 @@ class Decision(Enum):
 def get_patient_allergies(patient_id: int) -> list[str]:
     with get_connection() as conn:
         cur = conn.cursor()
-        get_allergies_query = """SELECT substance FROM allergies 
-                                WHERE patient_id = ?;"""
+        get_allergies_query = """SELECT substance FROM allergies
+                                WHERE patient_id = %s;"""
         cur.execute(get_allergies_query, (patient_id,))
-        rows = cur.fetchall()  
+        rows = cur.fetchall()
     return [row["substance"] for row in rows]
 
 def get_active_medications(patient_id: int) -> list[str]:
@@ -31,11 +31,11 @@ def get_active_medications(patient_id: int) -> list[str]:
         cur = conn.cursor()
         active_medication_query = """SELECT medications.name FROM medications
        INNER JOIN prescriptions ON prescriptions.medication_id = medications.id
-       WHERE prescriptions.patient_id = ? AND prescriptions.status = 'active';"""
+       WHERE prescriptions.patient_id = %s AND prescriptions.status = 'active';"""
         cur.execute(active_medication_query, (patient_id,))
         rows = cur.fetchall()
     return [row["name"] for row in rows]
-       
+
 def classify_action(action: ProposedAction) -> Decision:
     HIGH_RISK_TYPES = {"prescription", "medication_change", "dosage_update"}
     if (action.writes_to_db):
@@ -47,7 +47,10 @@ def classify_action(action: ProposedAction) -> Decision:
 def find_patient_by_name(name: str) -> list[dict]:
     with get_connection() as conn:
         cur = conn.cursor()
-        patient_name_query = """SELECT id, name, date_of_birth, medical_record_number FROM patients WHERE name LIKE ?;"""
+        # ILIKE, not LIKE — Postgres's LIKE is case-sensitive, unlike
+        # SQLite's (which is case-insensitive for ASCII by default). Using
+        # plain LIKE here would silently stop matching on case mismatches.
+        patient_name_query = """SELECT id, name, date_of_birth, medical_record_number FROM patients WHERE name ILIKE %s;"""
         cur.execute(patient_name_query, (f"%{name}%",))
         rows = cur.fetchall()
     return [dict(row) for row in rows]
@@ -56,7 +59,7 @@ def get_audit_log(limit: int = 50) -> list[dict]:
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("""
-            SELECT 
+            SELECT
                 a.id,
                 a.timestamp,
                 a.action_type,
@@ -69,7 +72,7 @@ def get_audit_log(limit: int = 50) -> list[dict]:
             LEFT JOIN surgeons s ON s.id = a.surgeon_id
             LEFT JOIN surgeons ab ON ab.id = a.approved_by
             ORDER BY a.timestamp DESC
-            LIMIT ?
+            LIMIT %s
         """, (limit,))
         rows = cur.fetchall()
     return [dict(row) for row in rows]
@@ -84,7 +87,7 @@ def log_audit_entry(
     payload = json.dumps({"description": action.description, "action_type": action.action_type})
     with get_connection() as conn:
         cur = conn.cursor()
-        insert_audit_entry = """INSERT INTO audit_log(action_type, action_payload, decision, surgeon_id, patient_id, approved_by) VALUES (?, ?, ?, ?, ?, ?);"""
+        insert_audit_entry = """INSERT INTO audit_log(action_type, action_payload, decision, surgeon_id, patient_id, approved_by) VALUES (%s, %s, %s, %s, %s, %s);"""
         cur.execute(insert_audit_entry, (action.action_type, payload, decision.value, surgeon_id, patient_id, approved_by))
         conn.commit()
 
@@ -92,7 +95,7 @@ def get_active_prescription(patient_id: int, medication_id: int) -> dict | None:
     with get_connection() as conn:
         cur = conn.cursor()
         medication_query = """SELECT id, dosage, frequency FROM prescriptions
-WHERE patient_id = ? AND medication_id = ? AND status = 'active';"""
+WHERE patient_id = %s AND medication_id = %s AND status = 'active';"""
         cur.execute(medication_query, (patient_id, medication_id))
         row = cur.fetchone()
         if row is None:
@@ -100,27 +103,27 @@ WHERE patient_id = ? AND medication_id = ? AND status = 'active';"""
         return dict(row)
 
 def update_prescription(
-    patient_id: int, 
-    medication_id: int, 
-    surgeon_id: int, 
-    dosage: str, 
-    frequency: str, 
-    start_date: str, 
+    patient_id: int,
+    medication_id: int,
+    surgeon_id: int,
+    dosage: str,
+    frequency: str,
+    start_date: str,
     end_date: str | None = None)-> None:
     with get_connection() as conn:
         cur = conn.cursor()
         existing = get_active_prescription(patient_id, medication_id)
         if (existing is None):
-            query = """INSERT INTO prescriptions (patient_id, medication_id, surgeon_id, dosage, frequency, start_date, end_date, status) VALUES(?, ?, ?, ?, ?, ?, ?, ?)"""
+            query = """INSERT INTO prescriptions (patient_id, medication_id, surgeon_id, dosage, frequency, start_date, end_date, status) VALUES(%s, %s, %s, %s, %s, %s, %s, %s)"""
             cur.execute(query, (patient_id, medication_id, surgeon_id, dosage, frequency, start_date, end_date, 'active'))
         else:
-            update_query = """UPDATE prescriptions SET status='completed' WHERE id = ?;"""
+            update_query = """UPDATE prescriptions SET status='completed' WHERE id = %s;"""
             cur.execute(update_query, (existing.get("id"),))
-            insert_query = """INSERT INTO prescriptions (patient_id, medication_id, surgeon_id, dosage, frequency, start_date, end_date, status) VALUES(?, ?, ?, ?, ?, ?, ?, ?)"""
+            insert_query = """INSERT INTO prescriptions (patient_id, medication_id, surgeon_id, dosage, frequency, start_date, end_date, status) VALUES(%s, %s, %s, %s, %s, %s, %s, %s)"""
             cur.execute(insert_query, (patient_id, medication_id, surgeon_id, dosage, frequency, start_date, end_date, 'active'))
         conn.commit()
-            
-    
+
+
 def create_pending_approval(
     action_type: str,
     action_payload: dict,
@@ -132,22 +135,25 @@ def create_pending_approval(
     payload = json.dumps(action_payload)
     with get_connection() as conn:
         cur = conn.cursor()
-        add_pending_approval = """INSERT INTO pending_approvals (action_type, action_payload, description, approver_id, patient_id, expires_at) VALUES(?, ?, ?, ?, ?, ?)"""
+        # RETURNING id replaces sqlite3's cur.lastrowid, which Postgres
+        # doesn't have — you ask the INSERT itself to hand back the new id.
+        add_pending_approval = """INSERT INTO pending_approvals (action_type, action_payload, description, approver_id, patient_id, expires_at) VALUES(%s, %s, %s, %s, %s, %s) RETURNING id"""
         cur.execute(add_pending_approval, (action_type, payload, description, approver_id, patient_id, expires_at))
+        new_id = cur.fetchone()["id"]
         conn.commit()
-        return cur.lastrowid
-        
+        return new_id
+
 def resolve_approval(approval_id: int, approval_status: str, channel_id: str) -> None:
     with get_connection() as conn:
         cur = conn.cursor()
-        update_approval = """UPDATE pending_approvals SET approval_status = ? WHERE id = ?;"""
+        update_approval = """UPDATE pending_approvals SET approval_status = %s WHERE id = %s;"""
         cur.execute(update_approval, (approval_status, approval_id))
         conn.commit()
 
         # Pull the action once — needed to execute it (if approved) and to
         # audit-log the outcome EITHER way. patient_id lives in the payload,
         # so both branches can populate it for the audit-log join.
-        fetch_payload = """SELECT action_type, action_payload, approver_id FROM pending_approvals WHERE id = ?;"""
+        fetch_payload = """SELECT action_type, action_payload, approver_id FROM pending_approvals WHERE id = %s;"""
         cur.execute(fetch_payload, (approval_id,))
         row = cur.fetchone()
         payload_string = row["action_payload"]
@@ -196,21 +202,22 @@ def resolve_approval(approval_id: int, approval_status: str, channel_id: str) ->
 def get_pending_approvals(surgeon_id: int) -> list[dict]:
     with get_connection() as conn:
         cur = conn.cursor()
-        fetch_surgeon_approvals = """SELECT * FROM pending_approvals WHERE approver_id = ?;"""
+        fetch_surgeon_approvals = """SELECT * FROM pending_approvals WHERE approver_id = %s;"""
         cur.execute(fetch_surgeon_approvals, (surgeon_id,))
         rows = cur.fetchall()
         return [dict(row) for row in rows]
-    
+
 def get_medication_by_name(name: str) -> dict | None:
     with get_connection() as conn:
         cur = conn.cursor()
-        medication_name_query = """SELECT * FROM medications WHERE name LIKE ?;"""
+        # ILIKE — see the note in find_patient_by_name on why this isn't LIKE.
+        medication_name_query = """SELECT * FROM medications WHERE name ILIKE %s;"""
         cur.execute(medication_name_query, (name,))
         row = cur.fetchone()
         if row is None:
             return None
         return dict(row)
-    
+
 def store_document(
     patient_id: int,
     document_type: str,
@@ -221,15 +228,16 @@ def store_document(
 ) -> int:
     with get_connection() as conn:
         cur = conn.cursor()
-        document_information = """INSERT INTO patient_documents (patient_id, document_type, summary, uploaded_by, file_path, surgeon_notes) VALUES(?, ?, ?, ?, ?, ?);"""
+        document_information = """INSERT INTO patient_documents (patient_id, document_type, summary, uploaded_by, file_path, surgeon_notes) VALUES(%s, %s, %s, %s, %s, %s) RETURNING id;"""
         cur.execute(document_information, (patient_id, document_type, summary, uploaded_by, file_path, surgeon_notes))
+        new_id = cur.fetchone()["id"]
         conn.commit()
-        return cur.lastrowid
-    
+        return new_id
+
 def get_patient_documents(patient_id: int) -> list[dict]:
     with get_connection() as conn:
         cur = conn.cursor()
-        patient_doc_query = """SELECT id, patient_id, document_type, summary, surgeon_notes, uploaded_by, created_at FROM patient_documents WHERE patient_id = ? ORDER BY created_at DESC;"""
+        patient_doc_query = """SELECT id, patient_id, document_type, summary, surgeon_notes, uploaded_by, created_at FROM patient_documents WHERE patient_id = %s ORDER BY created_at DESC;"""
         cur.execute(patient_doc_query, (patient_id,))
         rows = cur.fetchall()
     return [dict(row) for row in rows]
@@ -239,8 +247,8 @@ def onboard_patient(
     name: str,
     date_of_birth: str | None,
     sex: str | None,
-    allergies: list[dict],     
-    medications: list[dict],   
+    allergies: list[dict],
+    medications: list[dict],
     primary_diagnosis: str | None,
     surgeon_id: int,
 ) -> int:
@@ -250,7 +258,7 @@ def onboard_patient(
 
         while True:
             mrn = f"MRN-{random.randint(100000, 999999)}"
-            cur.execute("SELECT id FROM patients WHERE medical_record_number = ?", (mrn,))
+            cur.execute("SELECT id FROM patients WHERE medical_record_number = %s", (mrn,))
             if cur.fetchone() is None:
                 break
 
@@ -260,16 +268,16 @@ def onboard_patient(
 
         cur.execute(
             "INSERT INTO patients (name, date_of_birth, gender, medical_record_number) "
-            "VALUES (?, ?, ?, ?)",
+            "VALUES (%s, %s, %s, %s) RETURNING id",
             (name, dob, sex, mrn),
         )
-        patient_id = cur.lastrowid
+        patient_id = cur.fetchone()["id"]
 
         # 2. allergies — severity defaults to 'moderate' (see endpoint note)
         for a in allergies:
             cur.execute(
                 "INSERT INTO allergies (patient_id, substance, severity, reaction) "
-                "VALUES (?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s)",
                 (patient_id, a["name"], a.get("severity") or "moderate", None),
             )
 
@@ -277,16 +285,17 @@ def onboard_patient(
         #    not in the formulary rather than guessing an id
         today = date.today().isoformat()
         for m in medications:
-            med_row = cur.execute(
-                "SELECT id FROM medications WHERE name LIKE ?", (f"%{m['name']}%",)
-            ).fetchone()
+            cur.execute(
+                "SELECT id FROM medications WHERE name ILIKE %s", (f"%{m['name']}%",)
+            )
+            med_row = cur.fetchone()
             if med_row is None:
                 continue
             cur.execute(
                 """INSERT INTO prescriptions
                        (patient_id, medication_id, surgeon_id, dosage, frequency,
                         start_date, status)
-                   VALUES (?, ?, ?, ?, ?, ?, 'active')""",
+                   VALUES (%s, %s, %s, %s, %s, %s, 'active')""",
                 (patient_id, med_row["id"], surgeon_id,
                  m.get("dose") or "unspecified", m.get("frequency") or "unspecified",
                  today),
@@ -297,7 +306,7 @@ def onboard_patient(
             cur.execute(
                 """INSERT INTO patient_documents
                        (patient_id, document_type, summary, uploaded_by)
-                   VALUES (?, ?, ?, ?)""",
+                   VALUES (%s, %s, %s, %s)""",
                 (patient_id, "intake_summary", primary_diagnosis, surgeon_id),
             )
 
@@ -306,7 +315,7 @@ def onboard_patient(
         cur.execute(
             """INSERT INTO audit_log
                    (surgeon_id, patient_id, action_type, action_payload, decision, approved_by)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s, %s)""",
             (surgeon_id, patient_id, "onboard_patient", payload, "approved", surgeon_id),
         )
 
@@ -377,4 +386,3 @@ def check_drug_interactions(proposed_medication: str, patient_id: int) -> list[d
                 "description": interaction["description"],
             })
     return results
-        

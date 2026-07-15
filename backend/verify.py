@@ -16,11 +16,13 @@ def check(label: str, sql: str) -> None:
     print(f"  {label}")
     print(f"{'─' * 55}")
     with get_connection() as conn:
-        rows = conn.execute(sql).fetchall()
+        cur = conn.cursor()
+        cur.execute(sql)
+        rows = cur.fetchall()
         if not rows:
             print("  (no rows)")
             return
-        # sqlite3.Row supports keys() — like Map.keySet() in Java
+        # RealDictRow supports keys() — like Map.keySet() in Java
         headers = rows[0].keys()
         print("  " + " | ".join(f"{h:<20}" for h in headers))
         print("  " + "-+-".join("-" * 20 for _ in headers))
@@ -36,8 +38,12 @@ def run_counts() -> None:
     print("║     Table Row Counts          ║")
     print("╚══════════════════════════════╝")
     with get_connection() as conn:
+        cur = conn.cursor()
         for table in tables:
-            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            # AS count is required — RealDictCursor rows are dicts, not
+            # tuples, so there's no positional row[0] to fall back on.
+            cur.execute(f"SELECT COUNT(*) AS count FROM {table}")
+            count = cur.fetchone()["count"]
             bar = "█" * min(count, 40)
             print(f"  {table:<15} {count:>4}  {bar}")
 
@@ -79,12 +85,6 @@ def run_spot_checks() -> None:
         JOIN   allergies a ON a.patient_id = p.id
         WHERE  a.substance = 'Penicillin'
         """,
-    )
-
-    # 4. Surgeons and their Slack IDs (needed for Phase 4 approval routing)
-    check(
-        "Surgeons + Slack IDs",
-        "SELECT name, specialty, slack_user_id FROM surgeons",
     )
 
 

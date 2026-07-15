@@ -9,7 +9,6 @@ Safe to re-run: it clears old seed data first so you don't get duplicates.
 """
 
 import random
-import sqlite3
 from database import create_schema, get_connection
 from faker import Faker
 
@@ -109,7 +108,7 @@ INVESTIGATION_TEMPLATES = [
 # Seeders                                                              #
 # ------------------------------------------------------------------ #
 
-def seed_surgeons(conn: sqlite3.Connection, n: int = 8) -> int:
+def seed_surgeons(conn, n: int = 8) -> int:
     """Insert n surgeons with Nepali names."""
     rows = [
         (
@@ -119,14 +118,15 @@ def seed_surgeons(conn: sqlite3.Connection, n: int = 8) -> int:
         )
         for _ in range(n)
     ]
-    conn.executemany(
-        "INSERT INTO surgeons (name, email, specialty) VALUES (?, ?, ?)",
+    cur = conn.cursor()
+    cur.executemany(
+        "INSERT INTO surgeons (name, email, specialty) VALUES (%s, %s, %s)",
         rows,
     )
     return n
 
 
-def seed_patients(conn: sqlite3.Connection, n: int = 30) -> int:
+def seed_patients(conn, n: int = 30) -> int:
     """Insert n patients with Nepali names and gender."""
     rows = [
         (
@@ -138,41 +138,51 @@ def seed_patients(conn: sqlite3.Connection, n: int = 30) -> int:
         )
         for _ in range(n)
     ]
-    conn.executemany(
+    cur = conn.cursor()
+    cur.executemany(
         "INSERT INTO patients (name, date_of_birth, blood_type, gender, medical_record_number) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "VALUES (%s, %s, %s, %s, %s)",
         rows,
     )
     return n
 
 
-def seed_medications(conn: sqlite3.Connection) -> int:
-    conn.executemany(
-        "INSERT OR IGNORE INTO medications (name, category, typical_dosage, notes) "
-        "VALUES (?, ?, ?, ?)",
+def seed_medications(conn) -> int:
+    cur = conn.cursor()
+    # ON CONFLICT DO NOTHING replaces sqlite3's "INSERT OR IGNORE" — relies
+    # on the UNIQUE constraint already on medications.name.
+    cur.executemany(
+        "INSERT INTO medications (name, category, typical_dosage, notes) "
+        "VALUES (%s, %s, %s, %s) ON CONFLICT (name) DO NOTHING",
         MEDICATIONS,
     )
     return len(MEDICATIONS)
 
 
-def seed_allergies(conn: sqlite3.Connection) -> int:
-    patient_ids = [row["id"] for row in conn.execute("SELECT id FROM patients").fetchall()]
+def seed_allergies(conn) -> int:
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM patients")
+    patient_ids = [row["id"] for row in cur.fetchall()]
     rows = []
     for pid in patient_ids:
         substances = random.sample(ALLERGY_SUBSTANCES, k=random.randint(0, 3))
         for substance in substances:
             rows.append((pid, substance, random.choice(SEVERITIES), random.choice(REACTIONS)))
-    conn.executemany(
-        "INSERT INTO allergies (patient_id, substance, severity, reaction) VALUES (?, ?, ?, ?)",
+    cur.executemany(
+        "INSERT INTO allergies (patient_id, substance, severity, reaction) VALUES (%s, %s, %s, %s)",
         rows,
     )
     return len(rows)
 
 
-def seed_prescriptions(conn: sqlite3.Connection) -> int:
-    patient_ids    = [r["id"] for r in conn.execute("SELECT id FROM patients").fetchall()]
-    surgeon_ids    = [r["id"] for r in conn.execute("SELECT id FROM surgeons").fetchall()]
-    medication_ids = [r["id"] for r in conn.execute("SELECT id FROM medications").fetchall()]
+def seed_prescriptions(conn) -> int:
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM patients")
+    patient_ids = [r["id"] for r in cur.fetchall()]
+    cur.execute("SELECT id FROM surgeons")
+    surgeon_ids = [r["id"] for r in cur.fetchall()]
+    cur.execute("SELECT id FROM medications")
+    medication_ids = [r["id"] for r in cur.fetchall()]
 
     statuses = ["active"] * 6 + ["completed"] * 3 + ["cancelled"] * 1
     rows = []
@@ -195,23 +205,26 @@ def seed_prescriptions(conn: sqlite3.Connection) -> int:
                 end_date,
                 status,
             ))
-    conn.executemany(
+    cur.executemany(
         """INSERT INTO prescriptions
                (patient_id, medication_id, surgeon_id, dosage, frequency,
                 start_date, end_date, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
         rows,
     )
     return len(rows)
 
 
-def seed_vitals(conn: sqlite3.Connection) -> int:
+def seed_vitals(conn) -> int:
     """
     Give each patient 2-3 vital sign readings at different timestamps.
     Values are realistic for a post-surgical/transplant population.
     """
-    patient_ids = [r["id"] for r in conn.execute("SELECT id FROM patients").fetchall()]
-    surgeon_ids = [r["id"] for r in conn.execute("SELECT id FROM surgeons").fetchall()]
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM patients")
+    patient_ids = [r["id"] for r in cur.fetchall()]
+    cur.execute("SELECT id FROM surgeons")
+    surgeon_ids = [r["id"] for r in cur.fetchall()]
 
     rows = []
     for pid in patient_ids:
@@ -233,25 +246,27 @@ def seed_vitals(conn: sqlite3.Connection) -> int:
                 random.randint(12, 20),                   # respiration_rate
                 None,                                     # notes
             ))
-    conn.executemany(
+    cur.executemany(
         """INSERT INTO patient_vitals
                (patient_id, recorded_by, recorded_at,
                 weight_kg, height_cm, o2_saturation, temperature_celsius,
                 blood_pressure_systolic, blood_pressure_diastolic,
                 heart_rate, respiration_rate, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         rows,
     )
     return len(rows)
 
 
-def seed_investigations(conn: sqlite3.Connection) -> int:
+def seed_investigations(conn) -> int:
     """
     Give each patient 3-5 lab results using clinically relevant tests.
     ~25% of values are flagged abnormal to give the agent real data to surface.
     Tacrolimus and Cyclosporine levels are especially relevant for transplant patients.
     """
-    patient_ids = [r["id"] for r in conn.execute("SELECT id FROM patients").fetchall()]
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM patients")
+    patient_ids = [r["id"] for r in cur.fetchall()]
 
     rows = []
     for pid in patient_ids:
@@ -282,30 +297,106 @@ def seed_investigations(conn: sqlite3.Connection) -> int:
                 tested_at,
                 None,
             ))
-    conn.executemany(
+    cur.executemany(
         """INSERT INTO investigation_log
                (patient_id, test_name, test_value, unit,
                 reference_range, is_abnormal, tested_at, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
         rows,
     )
     return len(rows)
 
 
 # ------------------------------------------------------------------ #
+# Gita Limbu — a fixed, permanent demo patient (not randomly          #
+# generated). Real identity pulled from the pre-migration SQLite      #
+# database; her allergy/medication profile is curated rather than     #
+# the messy duplicate-riddled history that had piled up from manual   #
+# testing, so demos (allergy conflicts, drug interactions) are        #
+# reliable and reproducible across every reseed. No vitals,           #
+# investigation_log, or patient_documents rows by design.             #
+# ------------------------------------------------------------------ #
+
+GITA_LIMBU = {
+    "name": "Gita Limbu",
+    "date_of_birth": "1975-12-01",
+    "blood_type": "A-",
+    "gender": "Female",
+    "medical_record_number": "MRN-147608",
+}
+
+GITA_ALLERGIES = [
+    # (substance, severity, reaction)
+    ("Penicillin", "severe", "respiratory distress"),
+    ("Latex", "mild", "swelling"),
+    ("Aspirin", "moderate", "hives"),
+]
+
+GITA_MEDICATIONS = [
+    # (medication_name, dosage, frequency, start_date) — both currently active
+    ("Cyclosporine", "20mg", "three times a week", "2026-07-20"),
+    ("Amlodipine", "50mg", "once daily", "2025-10-20"),
+]
+
+
+def seed_gita_limbu(conn) -> int:
+    """
+    Insert Gita Limbu with a fixed identity and a curated allergy/medication
+    profile. Called after the random seeders in run() so she isn't part of
+    the pool those seeders generate vitals/investigation_log data for.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO patients (name, date_of_birth, blood_type, gender, medical_record_number) "
+        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (
+            GITA_LIMBU["name"],
+            GITA_LIMBU["date_of_birth"],
+            GITA_LIMBU["blood_type"],
+            GITA_LIMBU["gender"],
+            GITA_LIMBU["medical_record_number"],
+        ),
+    )
+    patient_id = cur.fetchone()["id"]
+
+    cur.executemany(
+        "INSERT INTO allergies (patient_id, substance, severity, reaction) VALUES (%s, %s, %s, %s)",
+        [(patient_id, substance, severity, reaction) for substance, severity, reaction in GITA_ALLERGIES],
+    )
+
+    cur.execute("SELECT id FROM surgeons ORDER BY random() LIMIT 1")
+    surgeon_id = cur.fetchone()["id"]
+
+    for med_name, dosage, frequency, start_date in GITA_MEDICATIONS:
+        cur.execute("SELECT id FROM medications WHERE name = %s", (med_name,))
+        med_row = cur.fetchone()
+        if med_row is None:
+            continue
+        cur.execute(
+            """INSERT INTO prescriptions
+                   (patient_id, medication_id, surgeon_id, dosage, frequency, start_date, status)
+               VALUES (%s, %s, %s, %s, %s, %s, 'active')""",
+            (patient_id, med_row["id"], surgeon_id, dosage, frequency, start_date),
+        )
+
+    return patient_id
+
+
+# ------------------------------------------------------------------ #
 # Main runner                                                          #
 # ------------------------------------------------------------------ #
 
-def clear_data(conn: sqlite3.Connection) -> None:
+def clear_data(conn) -> None:
     """
     Wipe all seed data. Order matters — delete child tables before parents.
     """
+    cur = conn.cursor()
     for table in [
         "audit_log", "patient_documents", "investigation_log",
         "patient_vitals", "pending_approvals", "prescriptions",
         "allergies", "patients", "medications", "surgeons",
     ]:
-        conn.execute(f"DELETE FROM {table}")
+        cur.execute(f"DELETE FROM {table}")
 
 
 def run() -> None:
@@ -323,6 +414,14 @@ def run() -> None:
             "patient_vitals":    seed_vitals(conn),
             "investigation_log": seed_investigations(conn),
         }
+
+        # Fixed patient — inserted after everything above, so she's not part
+        # of the random pool those seeders generated data for. She gets her
+        # own curated allergies/prescriptions from seed_gita_limbu, but no
+        # vitals, investigation_log, or patient_documents rows.
+        seed_gita_limbu(conn)
+        counts["patients"] += 1
+        counts["gita_limbu"] = 1
 
     print("\n✓ Seed complete:")
     for table, count in counts.items():

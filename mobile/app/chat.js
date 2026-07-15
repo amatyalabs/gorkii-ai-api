@@ -373,14 +373,15 @@ export default function Chat() {
   }, [voiceState, micPulse]);
   const kbTranslate = useRef(new Animated.Value(0)).current;
 
-  // Slide the floating input bar up/down with the keyboard. Native-driven
-  // (useNativeDriver: true) so once .start() fires the animation runs
-  // entirely on the UI thread — no per-frame JS work, no jank — using the
-  // OS's own reported duration/curve for that show/hide.
+  // Slide the floating input bar up/down with the keyboard — iOS only.
+  // Android's window natively resizes when the keyboard opens (Expo's
+  // default windowSoftInputMode="adjustResize"), which already pushes this
+  // absolutely-positioned bar up correctly on its own; adding this transform
+  // there double-moves it. iOS doesn't auto-resize, so it still needs the
+  // manual slide, native-driven (useNativeDriver: true) so once .start()
+  // fires the animation runs entirely on the UI thread.
   useEffect(() => {
-    const ios = Platform.OS === 'ios';
-    const showEvt = ios ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvt = ios ? 'keyboardWillHide' : 'keyboardDidHide';
+    if (Platform.OS !== 'ios') return;
 
     const slide = (toValue, duration) =>
       Animated.timing(kbTranslate, {
@@ -396,8 +397,8 @@ export default function Chat() {
     };
     const onHide = (e) => slide(0, e.duration);
 
-    const showSub = Keyboard.addListener(showEvt, onShow);
-    const hideSub = Keyboard.addListener(hideEvt, onHide);
+    const showSub = Keyboard.addListener('keyboardWillShow', onShow);
+    const hideSub = Keyboard.addListener('keyboardWillHide', onHide);
     return () => {
       showSub.remove();
       hideSub.remove();
