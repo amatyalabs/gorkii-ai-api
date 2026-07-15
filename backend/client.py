@@ -1,5 +1,5 @@
 from datetime import date
-import os, anthropic, sys
+import os, anthropic, sys, traceback
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -115,127 +115,140 @@ async def ask_agent_stream(user_message: str, surgeon_id: int, channel_id: str):
         args=["server.py"]
     )
 
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
+    # Broad handler around the whole MCP session — a failing tool call was
+    # previously only visible as the agent narrating a vague error in its
+    # final text (the tool_result content becomes something Claude paraphrases
+    # conversationally). traceback.print_exc() writes to stderr, which Railway
+    # flushes close to real-time — unlike this file's plain print() debug
+    # lines, which go to stdout and can sit in Python's block buffer for
+    # minutes in a non-TTY container before flushing all at once. Re-raising
+    # preserves the existing behavior in web.py, which already catches
+    # exceptions from this generator and yields a `type: error` SSE event.
+    try:
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
 
-            mcp_tools = await session.list_tools()
-            tools = [
-                {
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.inputSchema
-                }
-                for t in mcp_tools.tools
-            ]
+                mcp_tools = await session.list_tools()
+                tools = [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.inputSchema
+                    }
+                    for t in mcp_tools.tools
+                ]
 
-            while True:
-                messages = truncate_history(conversation_histories[channel_id])
-                response = await client.messages.create(
-                    model="claude-sonnet-4-6",
-                    max_tokens=1024,
-                    system=get_system_prompt(),
-                    tools=tools,
-                    messages=messages
-                )
-                print(f"TOKENS — input: {response.usage.input_tokens}, output: {response.usage.output_tokens}")
-
-                if response.stop_reason == "end_turn":
-                    final_response = response.content[0].text
-                    conversation_histories[channel_id].append({
-                        "role": "assistant",
-                        "content": final_response
-                    })
-                    yield {"type": "final", "content": final_response}
-                    return
-
-                if response.stop_reason == "tool_use":
-                    has_write_tool = any(
-                        block.type == "tool_use" and block.name in WRITE_TOOLS
-                        for block in response.content
+                while True:
+                    messages = truncate_history(conversation_histories[channel_id])
+                    response = await client.messages.create(
+                        model="claude-sonnet-4-6",
+                        max_tokens=1024,
+                        system=get_system_prompt(),
+                        tools=tools,
+                        messages=messages
                     )
-                    
-                    if has_write_tool:
+                    print(f"TOKENS — input: {response.usage.input_tokens}, output: {response.usage.output_tokens}")
+
+                    if response.stop_reason == "end_turn":
+                        final_response = response.content[0].text
+                        conversation_histories[channel_id].append({
+                            "role": "assistant",
+                            "content": final_response
+                        })
+                        yield {"type": "final", "content": final_response}
+                        return
+
+                    if response.stop_reason == "tool_use":
+                        has_write_tool = any(
+                            block.type == "tool_use" and block.name in WRITE_TOOLS
+                            for block in response.content
+                        )
+
+                        if has_write_tool:
+                            for block in response.content:
+                                if block.type == "text" and block.text.strip():
+                                    yield {"type": "context", "content": block.text}
+
+                        tool_results = []
                         for block in response.content:
-                            if block.type == "text" and block.text.strip():
-                                yield {"type": "context", "content": block.text}
+                            if block.type == "tool_use":
+                                label = STEP_LABELS.get(block.name, f"Working on {block.name}")
+                                yield {"type": "step", "content": label}
 
-                    tool_results = []
-                    for block in response.content:
-                        if block.type == "tool_use":
-                            label = STEP_LABELS.get(block.name, f"Working on {block.name}")
-                            yield {"type": "step", "content": label}
+                                print(f"DEBUG: Tool called: {block.name}")
+                                print(f"DEBUG: In WRITE_TOOLS: {block.name in WRITE_TOOLS}")
+                                database_write = block.name in WRITE_TOOLS
 
-                            print(f"DEBUG: Tool called: {block.name}")
-                            print(f"DEBUG: In WRITE_TOOLS: {block.name in WRITE_TOOLS}")
-                            database_write = block.name in WRITE_TOOLS
-
-                            action = ProposedAction(
-                                action_type=block.name,
-                                writes_to_db=database_write,
-                                description=f"Tool call: {block.name}"
-                            )
-                            decision = classify_action(action)
-                            print(f"DEBUG: Decision: {decision}")
-
-                            if Decision.SAFE == decision:
-                                result = await session.call_tool(
-                                    block.name,
-                                    arguments=block.input
+                                action = ProposedAction(
+                                    action_type=block.name,
+                                    writes_to_db=database_write,
+                                    description=f"Tool call: {block.name}"
                                 )
-                                tool_results.append({
-                                    "type": "tool_result",
-                                    "tool_use_id": block.id,
-                                    "content": str(result.content)
-                                })
+                                decision = classify_action(action)
+                                print(f"DEBUG: Decision: {decision}")
 
-                            if decision == Decision.NEEDS_APPROVAL:
-                                print(f"DEBUG: NEEDS_APPROVAL triggered for {block.name}")
-                                approval_id = None
-                                try:
-                                    approval_id = create_pending_approval(
-                                        action_type=block.name,
-                                        action_payload=block.input,
-                                        description=f"Approval required for {block.name}",
-                                        approver_id=surgeon_id
+                                if Decision.SAFE == decision:
+                                    result = await session.call_tool(
+                                        block.name,
+                                        arguments=block.input
                                     )
-                                    print(f"DEBUG: Created approval with id {approval_id}")
-                                except Exception as e:
-                                    print(f"DEBUG: create_pending_approval failed: {e}")
+                                    tool_results.append({
+                                        "type": "tool_result",
+                                        "tool_use_id": block.id,
+                                        "content": str(result.content)
+                                    })
 
-                                tool_results.append({
-                                    "type": "tool_result",
-                                    "tool_use_id": block.id,
-                                    "content": f"Action requires surgeon approval. Approval ID: {approval_id}. Awaiting decision."
-                                })
+                                if decision == Decision.NEEDS_APPROVAL:
+                                    print(f"DEBUG: NEEDS_APPROVAL triggered for {block.name}")
+                                    approval_id = None
+                                    try:
+                                        approval_id = create_pending_approval(
+                                            action_type=block.name,
+                                            action_payload=block.input,
+                                            description=f"Approval required for {block.name}",
+                                            approver_id=surgeon_id
+                                        )
+                                        print(f"DEBUG: Created approval with id {approval_id}")
+                                    except Exception as e:
+                                        print(f"DEBUG: create_pending_approval failed: {e}")
 
-                                # close out tool_use/tool_result pairing in
-                                # REAL history before the early return
-                                conversation_histories[channel_id].append({
-                                    "role": "assistant",
-                                    "content": response.content
-                                })
-                                conversation_histories[channel_id].append({
-                                    "role": "user",
-                                    "content": tool_results
-                                })
+                                    tool_results.append({
+                                        "type": "tool_result",
+                                        "tool_use_id": block.id,
+                                        "content": f"Action requires surgeon approval. Approval ID: {approval_id}. Awaiting decision."
+                                    })
 
-                                if approval_id is not None:
-                                    yield {
-                                        "type": "approval",
-                                        "approval_id": approval_id,
-                                        "action": block.name,
-                                        "fields": dict(block.input),
-                                    }
-                                return
+                                    # close out tool_use/tool_result pairing in
+                                    # REAL history before the early return
+                                    conversation_histories[channel_id].append({
+                                        "role": "assistant",
+                                        "content": response.content
+                                    })
+                                    conversation_histories[channel_id].append({
+                                        "role": "user",
+                                        "content": tool_results
+                                    })
 
-                    # all tools in this turn were SAFE — close out history
-                    # and continue the loop
-                    conversation_histories[channel_id].append({
-                        "role": "assistant",
-                        "content": response.content
-                    })
-                    conversation_histories[channel_id].append({
-                        "role": "user",
-                        "content": tool_results
-                    })
+                                    if approval_id is not None:
+                                        yield {
+                                            "type": "approval",
+                                            "approval_id": approval_id,
+                                            "action": block.name,
+                                            "fields": dict(block.input),
+                                        }
+                                    return
+
+                        # all tools in this turn were SAFE — close out history
+                        # and continue the loop
+                        conversation_histories[channel_id].append({
+                            "role": "assistant",
+                            "content": response.content
+                        })
+                        conversation_histories[channel_id].append({
+                            "role": "user",
+                            "content": tool_results
+                        })
+    except Exception:
+        traceback.print_exc()
+        raise
