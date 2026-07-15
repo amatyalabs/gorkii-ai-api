@@ -111,8 +111,8 @@ async def ask_agent_stream(user_message: str, surgeon_id: int, channel_id: str):
     })
 
     server_params = StdioServerParameters(
-        command="uv",
-        args=["run", "python", "server.py"]
+        command="python",
+        args=["server.py"]
     )
 
     async with stdio_client(server_params) as (read, write):
