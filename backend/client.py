@@ -1,5 +1,5 @@
 from datetime import date
-import os, anthropic
+import os, anthropic, sys
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -111,7 +111,7 @@ async def ask_agent_stream(user_message: str, surgeon_id: int, channel_id: str):
     })
 
     server_params = StdioServerParameters(
-        command="python",
+        command=sys.executable,
         args=["server.py"]
     )
 
