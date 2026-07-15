@@ -335,6 +335,11 @@ export default function Chat() {
   const [stepText, setStepText] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputHeight, setInputHeight] = useState(0);
+  // Measured height of the whole floating bar (thinking/status row + input).
+  // The list reserves exactly this as bottom padding so messages never scroll
+  // under the bar — and it grows automatically when the thinking stream or a
+  // voice status row appears above the input. Seeded with the resting height.
+  const [barHeight, setBarHeight] = useState(BAR_REST_HEIGHT);
   // 'idle' | 'recording' | 'transcribing' — drives the mic/send button and
   // the status row above the input bar.
   const [voiceState, setVoiceState] = useState('idle');
@@ -717,10 +722,13 @@ export default function Chat() {
           extraData={messages}
           keyExtractor={(m) => m.id}
           renderItem={renderItem}
-          // Static reserve for the resting input bar height — constant
-          // regardless of keyboard state, so the list never shifts when the
-          // keyboard opens; only the floating bar above it moves.
-          contentContainerStyle={[styles.listContent, { paddingBottom: BAR_REST_HEIGHT + insets.bottom }]}
+          // Reserve the floating bar's real (measured) height plus a small gap
+          // so messages always clear it — including when the thinking stream or
+          // a voice status row grows the bar above the input.
+          contentContainerStyle={[
+            styles.listContent,
+            { paddingBottom: barHeight + insets.bottom + spacing.sm },
+          ]}
           keyboardShouldPersistTaps="handled"
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
           ListEmptyComponent={
@@ -750,8 +758,10 @@ export default function Chat() {
         />
 
         {/* Absolutely positioned, translated by kbTranslate — the list above
-            it never reflows; only this bar moves. */}
+            it never reflows; only this bar moves. onLayout feeds its real
+            height back so the list reserves the right amount of space. */}
         <Animated.View
+          onLayout={(e) => setBarHeight(e.nativeEvent.layout.height)}
           style={[
             styles.floatingBar,
             { bottom: insets.bottom, transform: [{ translateY: kbTranslate }] },
