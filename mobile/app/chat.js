@@ -14,7 +14,19 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+// Not react-native's KeyboardAvoidingView: this one (react-native-keyboard-
+// controller) animates natively, frame-synced with the keyboard, and works
+// on Android under SDK 54's enforced edge-to-edge where the OS no longer
+// resizes the window (core adjustResize is a no-op there).
+// useReanimatedKeyboardAnimation exposes the same animation's shared values,
+// used to collapse the composer's home-indicator padding as the keyboard
+// rises — same system, not a second one.
+import {
+  KeyboardAvoidingView,
+  useReanimatedKeyboardAnimation,
+} from 'react-native-keyboard-controller';
+import Reanimated, { interpolate, useAnimatedStyle } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   useAudioRecorder,
   RecordingPresets,
@@ -33,9 +45,10 @@ const INPUT_ROW_HEIGHT = 44;
 const INPUT_LINE_HEIGHT = 20;
 const HEADER_HEIGHT = 52;
 const PANEL_WIDTH = 280;
-// Visual height of the input bar at rest (its own vertical padding + the
-// input row), used as static scroll-padding so messages never sit behind it.
-const BAR_REST_HEIGHT = INPUT_ROW_HEIGHT + spacing.sm * 2;
+// Distance (px) from the bottom of the list content within which we still
+// consider the user "at the bottom" — new messages auto-scroll; above it,
+// the user is reading history and we leave their scroll position alone.
+const NEAR_BOTTOM_THRESHOLD = 120;
 
 // Starter prompts shown under the greeting on the empty chat. Tapping one drops
 // it into the input box to edit and send. [patient] is a placeholder to fill in.
@@ -264,6 +277,7 @@ function PatientPickerModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <KeyboardAvoidingView style={styles.pickerKav} behavior="padding">
       <Pressable style={styles.pickerBackdrop} onPress={onClose}>
         <Pressable style={styles.pickerSheet} onPress={() => {}}>
           <View style={styles.pickerHeader}>
@@ -324,6 +338,7 @@ function PatientPickerModal({
           </ScrollView>
         </Pressable>
       </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -335,11 +350,6 @@ export default function Chat() {
   const [stepText, setStepText] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [inputHeight, setInputHeight] = useState(0);
-  // Measured height of the whole floating bar (thinking/status row + input).
-  // The list reserves exactly this as bottom padding so messages never scroll
-  // under the bar — and it grows automatically when the thinking stream or a
-  // voice status row appears above the input. Seeded with the resting height.
-  const [barHeight, setBarHeight] = useState(BAR_REST_HEIGHT);
   // 'idle' | 'recording' | 'transcribing' — drives the mic/send button and
   // the status row above the input bar.
   const [voiceState, setVoiceState] = useState('idle');
@@ -376,39 +386,56 @@ export default function Chat() {
     loop.start();
     return () => loop.stop();
   }, [voiceState, micPulse]);
-  const kbTranslate = useRef(new Animated.Value(0)).current;
 
-  // Slide the floating input bar up/down with the keyboard — iOS only.
-  // Android's window natively resizes when the keyboard opens (Expo's
-  // default windowSoftInputMode="adjustResize"), which already pushes this
-  // absolutely-positioned bar up correctly on its own; adding this transform
-  // there double-moves it. iOS doesn't auto-resize, so it still needs the
-  // manual slide, native-driven (useNativeDriver: true) so once .start()
-  // fires the animation runs entirely on the UI thread.
-  useEffect(() => {
-    if (Platform.OS !== 'ios') return;
+  // The list renders newest-first and is flipped with `inverted` — the
+  // standard chat-list trick. It puts the latest message at scroll offset 0
+  // (the visual bottom), which is what lets `maintainVisibleContentPosition`
+  // pin new messages there when the user's already at the bottom while
+  // leaving their place undisturbed when they've scrolled up into history —
+  // and, unlike a manual scrollToEnd()-on-content-change approach, it does
+  // this natively rather than reacting a frame after content lands.
+  const displayMessages = useMemo(() => [...messages].reverse(), [messages]);
 
-    const slide = (toValue, duration) =>
-      Animated.timing(kbTranslate, {
-        toValue,
-        duration: duration || 250,
-        easing: Easing.inOut(Easing.ease), // matches iOS's reported "easeInEaseOut"
-        useNativeDriver: true,
-      }).start();
+  // "Jump to latest" for actions that should always land at the bottom
+  // regardless of where the user currently is (sending a message). Offset 0
+  // is the bottom because the list is inverted.
+  const scrollToBottom = (animated) => listRef.current?.scrollToOffset({ offset: 0, animated });
 
-    const onShow = (e) => {
-      const h = e.endCoordinates?.height ?? 0;
-      slide(-Math.max(0, h - insets.bottom), e.duration);
-    };
-    const onHide = (e) => slide(0, e.duration);
+  // The whole keyboard interaction is driven by these two shared values —
+  // updated per-frame on the UI thread by keyboard-controller on both
+  // platforms (including iOS interactive dismissal). There is deliberately
+  // no KeyboardAvoidingView here: its translate-with-padding behavior
+  // applies a compensating padding at the END of every animation cycle,
+  // which resizes the FlatList after the motion settles — that settle step
+  // was visible as a small downward shift. This way nothing at all happens
+  // at animation end; the values simply stop changing.
+  const { height: kbHeight, progress: kbProgress } = useReanimatedKeyboardAnimation();
 
-    const showSub = Keyboard.addListener('keyboardWillShow', onShow);
-    const hideSub = Keyboard.addListener('keyboardWillHide', onHide);
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, [insets.bottom, kbTranslate]);
+  // Lifts the chat content (list/empty state + composer, as one unit) with
+  // the keyboard. kbHeight is negative while the keyboard is open, so this
+  // is a direct translation upward, clipped by the fixed chatArea around it.
+  const kbTranslateStyle = useAnimatedStyle(
+    () => ({ transform: [{ translateY: kbHeight.value }] }),
+    []
+  );
+
+  // Spacer rendered at the list's far end (the visual TOP, since the list is
+  // inverted): while the keyboard is open the top keyboard-height's worth of
+  // the translated list is clipped under the header, so this extends the
+  // scrollable range by the same amount to keep the oldest messages
+  // reachable. It grows at the far end of the content, away from offset 0,
+  // so the visible (bottom-anchored) messages never move because of it.
+  const listClearanceStyle = useAnimatedStyle(() => ({ height: -kbHeight.value }), []);
+
+  // Home-indicator padding on the composer, collapsed in lockstep with the
+  // keyboard. At rest the input clears the home indicator; fully open it
+  // evaluates to exactly 0 no matter what the safe-area reports, so a
+  // mid-keyboard inset re-report (Android does this) can't shift the layout
+  // after the animation settles.
+  const composerInsetStyle = useAnimatedStyle(
+    () => ({ paddingBottom: interpolate(kbProgress.value, [0, 1], [insets.bottom, 0]) }),
+    [insets.bottom]
+  );
 
   // Drop a starter prompt into the input, substituting [patient] for the
   // selected patient's name if one was chosen from the header picker.
@@ -483,6 +510,9 @@ export default function Chat() {
     setInput('');
     setSending(true);
     setStepText('Thinking…');
+    // A message the user just sent should always land at the bottom, even if
+    // they'd scrolled up to reread something first.
+    scrollToBottom(true);
 
     postChatStream(text, {
       onStep: (content) => setStepText(content),
@@ -563,8 +593,10 @@ export default function Chat() {
     // call. When the very next message is an approval, this text IS the "why
     // was this flagged" trace, so give it a labeled, muted treatment tying it
     // to the card below. Otherwise it's just a normal agent message.
+    // `index` here is a position in `displayMessages` (newest-first, for the
+    // inverted list), so the chronologically-next item is one index back.
     if (item.role === 'context') {
-      const flagged = messages[index + 1]?.role === 'approval';
+      const flagged = displayMessages[index - 1]?.role === 'approval';
       if (flagged) {
         return (
           <View style={[styles.bubble, styles.bubbleAgent, styles.contextFlag]}>
@@ -656,11 +688,21 @@ export default function Chat() {
   const stickBottom = lineCount > 1;
 
   return (
-    <SafeAreaView style={styles.safe} edges={['top']}>
+    // Plain View, not SafeAreaView, and deliberately NO bottom padding: the
+    // chat container's bottom edge must sit exactly at the screen edge so
+    // the geometry keyboard-controller measures never changes — safe-area
+    // insets on Android get re-reported around keyboard events, and any
+    // layout derived from them shifts after the animation settles. The
+    // home-indicator inset is handled inside the composer instead, animated
+    // away in lockstep with the keyboard (see composerInsetStyle).
+    <View style={styles.screen}>
       {/* Native header off — its iOS 26 "Liquid Glass" bar-button background
           can't be removed per-button, so we draw our own header row instead. */}
       <Stack.Screen options={{ headerShown: false }} />
-      <View style={styles.header}>
+      {/* Fixed: owns the status-bar zone (paddingTop) and sits above the
+          chat in z-order, so the rising conversation slides underneath it
+          and can never paint over the header or into the status bar. */}
+      <View style={[styles.header, { paddingTop: insets.top, height: HEADER_HEIGHT + insets.top }]}>
         <TouchableOpacity
           onPress={() => setMenuOpen(true)}
           hitSlop={8}
@@ -714,59 +756,86 @@ export default function Chat() {
         onSelect={selectPatientForTemplates}
         onClear={() => setSelectedPatientName(null)}
       />
-      <View style={styles.fill}>
-        <FlatList
-          ref={listRef}
-          style={styles.fill}
-          data={messages}
-          extraData={messages}
-          keyExtractor={(m) => m.id}
-          renderItem={renderItem}
-          // Reserve the floating bar's real (measured) height plus a small gap
-          // so messages always clear it — including when the thinking stream or
-          // a voice status row grows the bar above the input.
-          contentContainerStyle={[
-            styles.listContent,
-            { paddingBottom: barHeight + insets.bottom + spacing.sm },
-          ]}
-          keyboardShouldPersistTaps="handled"
-          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
-          ListEmptyComponent={
-            <View style={styles.emptyWrap}>
-              <ChatLogo />
-              <Text style={styles.prompt}>What can I help you with?</Text>
-              <View style={styles.templates}>
-                {TEMPLATES.map((t) => (
-                  <TouchableOpacity
-                    key={t.text}
-                    style={styles.templateCard}
-                    onPress={() => selectTemplate(t.text)}
-                    activeOpacity={0.7}
-                  >
-                    <View style={styles.templateIconWrap}>
-                      <Ionicons name={t.icon} size={17} color={colors.primary} />
-                    </View>
-                    <Text style={styles.templateText}>
-                      {selectedPatientName ? t.text.replace('[patient]', selectedPatientName) : t.text}
-                    </Text>
-                    <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
-                  </TouchableOpacity>
-                ))}
-              </View>
+      {/* Fixed frame for the chat. Never moves, never resizes — it exists to
+          clip the translated content below so the conversation slides under
+          the header instead of over it. */}
+      <View style={styles.chatArea}>
+        {/* The ONLY thing the keyboard moves: list/empty state + composer as
+            one unit, on a pure translateY transform tracking the keyboard
+            frame-by-frame (kbTranslateStyle). A transform, not a layout
+            change — nothing reflows during the motion OR after it, which is
+            the ChatGPT/iMessage "conversation glued to the keyboard" feel. */}
+        <Reanimated.View style={[styles.fill, kbTranslateStyle]}>
+        {messages.length === 0 ? (
+          // Rendered as a sibling, not FlatList's ListEmptyComponent: that
+          // prop gets the list's own `inverted` flip applied to it (a single
+          // scaleY(-1), vs. the double-flip that keeps normal rows upright),
+          // so it would render upside down.
+          // Pressable because tap-to-dismiss-keyboard only exists inside
+          // scroll views — on this plain empty state, a tap outside the input
+          // would otherwise leave the keyboard up. (Keyboard.dismiss is just
+          // an imperative call, not a listener — still one keyboard system.)
+          <Pressable style={styles.emptyWrap} onPress={Keyboard.dismiss}>
+            <ChatLogo />
+            <Text style={styles.prompt}>What can I help you with?</Text>
+            <View style={styles.templates}>
+              {TEMPLATES.map((t) => (
+                <TouchableOpacity
+                  key={t.text}
+                  style={styles.templateCard}
+                  onPress={() => selectTemplate(t.text)}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.templateIconWrap}>
+                    <Ionicons name={t.icon} size={17} color={colors.primary} />
+                  </View>
+                  <Text style={styles.templateText}>
+                    {selectedPatientName ? t.text.replace('[patient]', selectedPatientName) : t.text}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+                </TouchableOpacity>
+              ))}
             </View>
-          }
-        />
+          </Pressable>
+        ) : (
+          <FlatList
+            ref={listRef}
+            style={styles.fill}
+            data={displayMessages}
+            extraData={messages}
+            keyExtractor={(m) => m.id}
+            renderItem={renderItem}
+            // Newest-first data + inverted is the standard chat-list trick:
+            // the latest message sits at scroll offset 0 (the visual
+            // bottom), which is what makes maintainVisibleContentPosition
+            // below work like ChatGPT/iMessage — pin to the bottom while
+            // the user's there, leave them alone once they've scrolled up.
+            inverted
+            contentContainerStyle={styles.listContent}
+            keyboardShouldPersistTaps="handled"
+            // iMessage-style dismissal: on iOS, dragging down over the
+            // keyboard tracks the finger (kbTranslateStyle follows it through
+            // keyboard-controller's interactive events); Android doesn't do
+            // finger-tracked dismissal natively, so fall back to dismissing
+            // as the scroll starts.
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            maintainVisibleContentPosition={{
+              minIndexForVisible: 0,
+              autoscrollToTopThreshold: NEAR_BOTTOM_THRESHOLD,
+            }}
+            // Inverted list => the footer renders at the visual TOP. While
+            // the keyboard is open it grows by the keyboard height so the
+            // oldest messages can still scroll out from under the header
+            // (the translated list's top is clipped by chatArea).
+            ListFooterComponent={<Reanimated.View style={listClearanceStyle} />}
+          />
+        )}
 
-        {/* Absolutely positioned, translated by kbTranslate — the list above
-            it never reflows; only this bar moves. onLayout feeds its real
-            height back so the list reserves the right amount of space. */}
-        <Animated.View
-          onLayout={(e) => setBarHeight(e.nativeEvent.layout.height)}
-          style={[
-            styles.floatingBar,
-            { bottom: insets.bottom, transform: [{ translateY: kbTranslate }] },
-          ]}
-        >
+        {/* Sits naturally below the list — no absolute positioning, no
+            manual translation. Its bottom inset is keyboard-progress-driven
+            (composerInsetStyle above): insets.bottom at rest, exactly 0 when
+            the keyboard is open. */}
+        <Reanimated.View style={[styles.composer, composerInsetStyle]}>
           {sending && stepText && (
             <View style={styles.typing}>
               <ThinkingSpinner />
@@ -837,25 +906,34 @@ export default function Chat() {
               </TouchableOpacity>
             </View>
           </View>
-        </Animated.View>
+        </Reanimated.View>
+        </Reanimated.View>
       </View>
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.base },
+  screen: { flex: 1, backgroundColor: colors.base },
   fill: { flex: 1 },
+  // Fixed frame around the keyboard-translated chat content. overflow hidden
+  // clips the content as it rides up, so it disappears under the header's
+  // bottom edge instead of drawing over the header / status bar.
+  chatArea: { flex: 1, overflow: 'hidden' },
   // Hamburger left, wordmark centered, "new chat" right — all ghost buttons;
-  // orange stays reserved for Send.
+  // orange stays reserved for Send. Opaque and raised above the chat area
+  // (zIndex) because the keyboard animation translates the chat container
+  // upward past the header's bottom edge — the chat must slide under this
+  // bar, never over it. Height/paddingTop are set inline (safe-area inset).
   header: {
-    height: HEADER_HEIGHT,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.sm,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.elevated,
+    backgroundColor: colors.base,
+    zIndex: 10,
   },
   headerButton: {
     width: 34,
@@ -871,8 +949,10 @@ const styles = StyleSheet.create({
     letterSpacing: 1.1,
     textTransform: 'uppercase',
   },
-  // Extra bottom padding so the last message scrolls clear of the floating input.
-  listContent: { padding: spacing.md, flexGrow: 1 },
+  // No flexGrow: with the inverted list, a short conversation should sit
+  // anchored at the bottom (near the composer) the way real chat apps do,
+  // not stretched/centered in the middle of the screen.
+  listContent: { padding: spacing.md },
   // Fills the (flexGrow:1) list area so the empty text sits centered in the chat.
   emptyWrap: {
     flex: 1,
@@ -1101,8 +1181,12 @@ const styles = StyleSheet.create({
   typing: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    marginHorizontal: spacing.md,
+    marginTop: spacing.sm,
     paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
+    paddingVertical: spacing.sm,
   },
   typingText: {
     flex: 1,
@@ -1127,12 +1211,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
   },
-  // Floats over the message list; kbTranslate slides it up with the
-  // keyboard, so the list underneath never reflows.
-  floatingBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
+  // A normal flex sibling below the list now, not an overlay — it takes up
+  // real layout space, so the list's own contentContainerStyle no longer
+  // needs to reserve room for it.
+  composer: {
+    backgroundColor: colors.base,
   },
   inputBar: {
     padding: spacing.sm,
@@ -1213,6 +1296,9 @@ const styles = StyleSheet.create({
 
   // Patient picker — bottom sheet (same shape as the doc-type picker on the
   // Documents screen) with a search box and a scrollable list.
+  // Wraps the backdrop so the sheet rises above the keyboard on iOS instead
+  // of the keyboard covering the results list beneath the search box.
+  pickerKav: { flex: 1 },
   pickerBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',

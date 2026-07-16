@@ -71,6 +71,9 @@ export default function Documents() {
   const [fieldFocused, setFieldFocused] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState(null);
   const searchInputRef = useRef(null);
+  // Measured height of the search row, so the dropdown can float directly
+  // beneath it as an overlay instead of pushing "Document type" etc. down.
+  const [searchRowHeight, setSearchRowHeight] = useState(0);
 
   const [docType, setDocType] = useState(null);
   const [typeModalOpen, setTypeModalOpen] = useState(false);
@@ -238,8 +241,11 @@ export default function Documents() {
               </TouchableOpacity>
             </View>
           ) : (
-            <>
-              <View style={styles.searchRow}>
+            <View style={styles.patientSearchWrap}>
+              <View
+                style={styles.searchRow}
+                onLayout={(e) => setSearchRowHeight(e.nativeEvent.layout.height)}
+              >
                 <Ionicons name="search" size={18} color={colors.textSecondary} />
                 <TextInput
                   ref={searchInputRef}
@@ -259,7 +265,8 @@ export default function Documents() {
               </View>
 
               {showList && (
-                <View style={styles.dropdown}>
+                <View style={[styles.dropdown, { top: searchRowHeight + spacing.xs }]}>
+                <View style={styles.dropdownInner}>
                   {loadingPatients ? (
                     <View style={styles.dropdownState}>
                       <Spinner />
@@ -304,8 +311,9 @@ export default function Documents() {
                     </>
                   )}
                 </View>
+                </View>
               )}
-            </>
+            </View>
           )}
 
           {/* ---- 2. Document type ---- */}
@@ -477,7 +485,13 @@ const styles = StyleSheet.create({
   },
   sectionGap: { marginTop: spacing.lg },
 
-  // Patient search
+  // Patient search — the dropdown is an absolutely positioned overlay
+  // anchored to this wrapper, so it floats over "Document type" etc. below
+  // instead of pushing that content down while open.
+  patientSearchWrap: {
+    position: 'relative',
+    zIndex: 20,
+  },
   searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -493,10 +507,24 @@ const styles = StyleSheet.create({
     fontSize: 16,
     paddingVertical: spacing.md,
   },
+  // Outer: positioning + shadow. Not clipped, so the shadow can render on iOS.
   dropdown: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    zIndex: 20,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  // Inner: background/border/radius + overflow:hidden so row content clips
+  // to the rounded corners. Split from `dropdown` because overflow:hidden
+  // would otherwise clip the outer shadow too.
+  dropdownInner: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,
-    marginTop: spacing.xs,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.elevated,
     overflow: 'hidden',

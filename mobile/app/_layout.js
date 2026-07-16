@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import {
   useFonts,
   IBMPlexSans_400Regular,
@@ -34,8 +35,21 @@ export default function RootLayout() {
 
   if (!fontsLoaded) return null;
 
+  // KeyboardProvider (react-native-keyboard-controller) takes over keyboard
+  // handling app-wide: it tracks the IME natively on both platforms, which is
+  // required on Android since SDK 54's enforced edge-to-edge stops the OS
+  // from resizing the window (adjustResize no longer does anything), and it
+  // is what lets the chat screen animate frame-synced with the keyboard.
+  //
+  // The translucent flags matter on Android: this app is already
+  // edge-to-edge (mandatory in SDK 54), but the provider can't detect Expo's
+  // implementation of it (it looks for the RNEdgeToEdge module, which Expo
+  // doesn't use) — without these it "helpfully" re-adds system-bar
+  // compensation padding on top of the real insets, and that second inset
+  // system applying around keyboard events is visible as a small downward
+  // shift right after the keyboard settles.
   return (
-    <>
+    <KeyboardProvider statusBarTranslucent navigationBarTranslucent>
       <StatusBar style="light" />
       <Stack
         screenOptions={{
@@ -53,6 +67,6 @@ export default function RootLayout() {
         <Stack.Screen name="patient-capture" options={{ headerShown: false }} />
         <Stack.Screen name="patient-confirm" options={{ headerShown: false }} />
       </Stack>
-    </>
+    </KeyboardProvider>
   );
 }
